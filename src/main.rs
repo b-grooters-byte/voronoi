@@ -1,9 +1,10 @@
 mod direct2d;
+mod voronoi;
 
 use std::sync::Once;
 
 use windows::{
-    core::HSTRING,
+    core::{HSTRING, Result},
     w,
     Win32::{
         Foundation::{HWND, WPARAM, LPARAM, LRESULT},
@@ -18,7 +19,7 @@ use windows::{
 
 static REGISTER_WINDOW_CLASS: Once = Once::new();
 
-fn main() -> windows::core::Result<()> {
+fn main() -> Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED)?;
     }
