@@ -1,3 +1,5 @@
+mod direct2d;
+
 use std::sync::Once;
 
 use windows::{
@@ -9,7 +11,7 @@ use windows::{
         System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
         UI::WindowsAndMessaging::{
             CreateWindowExW, RegisterClassW, ShowWindow, CW_USEDEFAULT, SW_SHOW, WNDCLASSW,
-            WS_OVERLAPPEDWINDOW, DefWindowProcW, WM_DESTROY, PostQuitMessage,
+            WS_OVERLAPPEDWINDOW, DefWindowProcW, WM_DESTROY, PostQuitMessage, GetMessageW, DispatchMessageW, MSG,
         },
     },
 };
@@ -19,6 +21,14 @@ static REGISTER_WINDOW_CLASS: Once = Once::new();
 fn main() -> windows::core::Result<()> {
     unsafe {
         CoInitializeEx(None, COINIT_MULTITHREADED)?;
+    }
+    let factory = direct2d::create_factory()?;
+    let _m = AppWindow::new("Voronoi", &factory);
+    let mut message = MSG::default();
+    unsafe {
+        while GetMessageW(&mut message, HWND(0), 0, 0).into() {
+            DispatchMessageW(&message);
+        }
     }
     Ok(())
 }
