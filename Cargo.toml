@@ -1,0 +1,29 @@
+[package]
+name = "voronoi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = {version="0.8.5", features=["std_rng"]}
+
+[dependencies.windows]
+version = "0.48"
+features = [
+    "Foundation",
+    "Foundation_Numerics",
+    "Win32_Foundation",
+    "Win32_Graphics",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging_D2D",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemServices",
+    "Win32_UI_WindowsAndMessaging",
+]
