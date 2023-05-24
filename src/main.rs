@@ -4,15 +4,16 @@ mod voronoi;
 use std::sync::Once;
 
 use windows::{
-    core::{HSTRING, Result},
+    core::{Result, HSTRING},
     w,
     Win32::{
-        Foundation::{HWND, WPARAM, LPARAM, LRESULT},
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
         Graphics::Direct2D::ID2D1Factory1,
         System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
         UI::WindowsAndMessaging::{
-            CreateWindowExW, RegisterClassW, ShowWindow, CW_USEDEFAULT, SW_SHOW, WNDCLASSW,
-            WS_OVERLAPPEDWINDOW, DefWindowProcW, WM_DESTROY, PostQuitMessage, GetMessageW, DispatchMessageW, MSG,
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
+            RegisterClassW, ShowWindow, CW_USEDEFAULT, MSG, SW_SHOW, WM_DESTROY, WNDCLASSW,
+            WS_OVERLAPPEDWINDOW,
         },
     },
 };
@@ -80,13 +81,24 @@ impl<'a> AppWindow<'a> {
         Ok(app_window)
     }
 
-    fn message_loop(&mut self, hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> windows::Win32::Foundation::LRESULT {
+    fn message_loop(
+        &mut self,
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
         match message {
             _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
         }
     }
 
-    unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         match message {
             WM_DESTROY => {
                 PostQuitMessage(0);
