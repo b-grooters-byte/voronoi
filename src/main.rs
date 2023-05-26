@@ -7,13 +7,13 @@ use windows::{
     core::{Result, HSTRING},
     w,
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT},
         Graphics::Direct2D::ID2D1Factory1,
         System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
         UI::WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
             RegisterClassW, ShowWindow, CW_USEDEFAULT, MSG, SW_SHOW, WM_DESTROY, WNDCLASSW,
-            WS_OVERLAPPEDWINDOW,
+            WS_OVERLAPPEDWINDOW, WM_CREATE, GetWindowRect, SetWindowLongPtrA, CREATESTRUCTA, GWLP_USERDATA, GetWindowLongPtrA, WS_VISIBLE, AdjustWindowRect, SetWindowPos, SWP_NOMOVE, WM_SIZE,
         },
     },
 };
@@ -38,6 +38,7 @@ fn main() -> Result<()> {
 pub struct AppWindow<'a> {
     hwnd: HWND,
     factory: &'a ID2D1Factory1,
+    voronoi: Option<Box<voronoi::Voronoi<'a>>>,
 }
 
 impl<'a> AppWindow<'a> {
@@ -47,9 +48,6 @@ impl<'a> AppWindow<'a> {
     ) -> windows::core::Result<Box<Self>> {
         let window_class = w!("mars.window.voronoi");
         REGISTER_WINDOW_CLASS.call_once(|| {
-            let class_name = HSTRING::from("AppWindow");
-            let class_name = class_name.as_wide();
-            let class_name = class_name.as_ptr();
             let class = WNDCLASSW {
                 lpfnWndProc: Some(Self::window_proc),
                 lpszClassName: window_class,
@@ -60,6 +58,7 @@ impl<'a> AppWindow<'a> {
         let mut app_window = Box::new(Self {
             hwnd: HWND(0),
             factory,
+            voronoi: None,
         });
         let hwnd = unsafe {
             CreateWindowExW(
@@ -89,6 +88,50 @@ impl<'a> AppWindow<'a> {
         lparam: LPARAM,
     ) -> windows::Win32::Foundation::LRESULT {
         match message {
+            WM_CREATE => {
+                match voronoi::Voronoi::new(10, self.hwnd, self.factory) {
+                    Ok(v) => {
+                        self.voronoi = Some(v);
+                        LRESULT(0)
+                    }
+                    Err(e) => {
+                        LRESULT(-1)
+                    }
+                }
+            }   
+            WM_SIZE => {
+                if self.voronoi.is_none() {
+                    return LRESULT(0);
+                }
+                let mut rect = RECT::default();
+                let mut child_rect = RECT::default();
+                unsafe {
+                    GetWindowRect(self.hwnd, &mut rect);
+                    GetWindowRect(
+                        self.voronoi.as_ref().unwrap().hwnd(),
+                        &mut child_rect,
+                    );
+                    AdjustWindowRect(
+                        &mut rect,
+                        WS_VISIBLE | WS_OVERLAPPEDWINDOW,
+                        false,
+                    );
+                SetWindowPos(
+                    self.voronoi.as_ref().unwrap().hwnd(),
+                    None,
+                    rect.left,
+                    rect.top,
+                    rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_NOMOVE,
+                );
+                }
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                unsafe { PostQuitMessage(0) };
+                LRESULT(0)
+            }
             _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
         }
     }
@@ -99,12 +142,18 @@ impl<'a> AppWindow<'a> {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        match message {
-            WM_DESTROY => {
-                PostQuitMessage(0);
-                LRESULT(0)
-            }
-            _ => DefWindowProcW(hwnd, message, wparam, lparam),
+        if message == WM_CREATE {
+            println!("WM_CREATE - application window");
+            let create_struct = lparam.0 as *const CREATESTRUCTA;
+            let this = (*create_struct).lpCreateParams as *mut Self;
+            (*this).hwnd = hwnd;
+            SetWindowLongPtrA(hwnd, GWLP_USERDATA, this as _);
         }
+        let this = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut Self;
+
+        if !this.is_null() {
+            return (*this).message_loop(hwnd, message, wparam, lparam);
+        }
+        DefWindowProcW(hwnd, message, wparam, lparam)
     }
 }

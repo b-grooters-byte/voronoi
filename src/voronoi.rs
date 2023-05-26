@@ -3,27 +3,28 @@ use std::sync::Once;
 use rand::Rng;
 use windows::{
     core::{Result, HSTRING},
+    w,
     Win32::{
-        Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM, HMODULE},
+        Foundation::{COLORREF, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct2D::{
                 Common::D2D1_COLOR_F, ID2D1Factory1, ID2D1HwndRenderTarget,
                 D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
                 D2D1_RENDER_TARGET_PROPERTIES,
             },
-            Gdi::CreateSolidBrush,
+            Gdi::{CreateSolidBrush, PAINTSTRUCT, BeginPaint, EndPaint},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
             DefWindowProcW, GetClientRect, GetWindowLongPtrA, LoadCursorW, SetWindowLongPtrA,
-            CREATESTRUCTA, GWLP_USERDATA, IDC_ARROW, WM_CREATE,
+            CREATESTRUCTA, GWLP_USERDATA, IDC_ARROW, WM_CREATE, CreateWindowExW, WINDOW_EX_STYLE, WS_VISIBLE, WS_CLIPSIBLINGS, WS_CHILDWINDOW, CW_USEDEFAULT, HMENU, WM_PAINT, WM_SIZE,
         },
-    }, w,
+    },
 };
 
 use crate::direct2d::create_stroke_style;
 
-static REGISTER_WINDOW_CLASS: Once = Once::new();
+static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
 
 pub struct Voronoi<'a> {
     hwnd: HWND,
@@ -39,8 +40,9 @@ impl<'a> Voronoi<'a> {
         let instance = unsafe { GetModuleHandleW(None)? };
         let line_style = create_stroke_style(&factory, None)?;
 
-        REGISTER_WINDOW_CLASS.call_once(|| {
-            let class_name = w!("Voronoi");
+        let class_name = w!("mars.window.voronoi.view");
+
+        REGISTER_VORONOI_WINDOW_CLASS.call_once(|| {
             let class = windows::Win32::UI::WindowsAndMessaging::WNDCLASSW {
                 lpfnWndProc: Some(Self::window_proc),
                 hInstance: instance,
@@ -61,7 +63,27 @@ impl<'a> Voronoi<'a> {
             sweep_line: 0.0,
         });
 
+        let _window = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class_name,
+                &HSTRING::from(""),
+                WS_VISIBLE | WS_CLIPSIBLINGS | WS_CHILDWINDOW,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT, //width as i32,
+                CW_USEDEFAULT, // height as i32,
+                parent,
+                HMENU(0),
+                instance,
+                Some(voronoi.as_mut() as *mut _ as _),
+            )
+        };
         Ok(voronoi)
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
     }
 
     pub fn render(&mut self) -> Result<()> {
@@ -109,7 +131,21 @@ impl<'a> Voronoi<'a> {
 
     fn message_handler(&mut self, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         match message {
-            _ => unsafe { DefWindowProcW(self.hwnd, message, wparam, lparam) },
+            WM_PAINT => {
+                let mut ps = PAINTSTRUCT::default();
+                unsafe {
+                    BeginPaint(self.hwnd, &mut ps);
+                    self.render().expect("unable to render");
+                    EndPaint(self.hwnd, &ps);
+                }
+                LRESULT(0)
+            }
+            WM_SIZE => {
+                LRESULT(0)
+            }
+            _ => {
+                unsafe { DefWindowProcW(self.hwnd, message, wparam, lparam) }
+            },
         }
     }
 
@@ -120,6 +156,7 @@ impl<'a> Voronoi<'a> {
         lparam: LPARAM,
     ) -> LRESULT {
         if message == WM_CREATE {
+            println!("WM_CREATE - voronoi window");
             let create_struct = lparam.0 as *const CREATESTRUCTA;
             let this = (*create_struct).lpCreateParams as *mut Self;
             (*this).hwnd = hwnd;
