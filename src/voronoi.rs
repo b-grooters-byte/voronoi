@@ -8,9 +8,9 @@ use windows::{
         Foundation::{COLORREF, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct2D::{
-                Common::D2D1_COLOR_F, ID2D1Factory1, ID2D1HwndRenderTarget,
+                Common::{D2D1_COLOR_F, D2D_POINT_2F}, ID2D1Factory1, ID2D1HwndRenderTarget,
                 D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
-                D2D1_RENDER_TARGET_PROPERTIES,
+                D2D1_RENDER_TARGET_PROPERTIES, D2D1_ELLIPSE, ID2D1SolidColorBrush, ID2D1StrokeStyle,
             },
             Gdi::{CreateSolidBrush, PAINTSTRUCT, BeginPaint, EndPaint},
         },
@@ -22,7 +22,7 @@ use windows::{
     },
 };
 
-use crate::direct2d::create_stroke_style;
+use crate::direct2d::{create_stroke_style, create_brush};
 
 static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
 
@@ -32,6 +32,8 @@ pub struct Voronoi<'a> {
     target: Option<ID2D1HwndRenderTarget>,
     site_count: u16,
     sites: Vec<Site>,
+    site_brush: Option<ID2D1SolidColorBrush>,
+    site_line_style: ID2D1StrokeStyle,
     sweep_line: f32,
 }
 
@@ -39,7 +41,6 @@ impl<'a> Voronoi<'a> {
     pub fn new(sites: u16, parent: HWND, factory: &'a ID2D1Factory1) -> Result<Box<Self>> {
         let instance = unsafe { GetModuleHandleW(None)? };
         let line_style = create_stroke_style(&factory, None)?;
-
         let class_name = w!("mars.window.voronoi.view");
 
         REGISTER_VORONOI_WINDOW_CLASS.call_once(|| {
@@ -61,7 +62,11 @@ impl<'a> Voronoi<'a> {
             site_count: sites,
             sites: Vec::new(),
             sweep_line: 0.0,
+            site_brush: None,
+            site_line_style: line_style,
         });
+
+        voronoi.random_sites();
 
         let _window = unsafe {
             CreateWindowExW(
@@ -86,26 +91,45 @@ impl<'a> Voronoi<'a> {
         self.hwnd
     }
 
+
+
     pub fn render(&mut self) -> Result<()> {
-        self.create_render_target()?;
+        if self.target.is_none() {
+            self.create_render_target()?;
+            self.create_device_resources()?;
+        }
+
+        let target = self.target.as_ref().unwrap();
+        let site_brush = self.site_brush.as_ref().unwrap();
+        let line_style = &self.site_line_style;
         unsafe {
-            self.target.as_ref().unwrap().BeginDraw();
-            self.target.as_ref().unwrap().Clear(Some(&D2D1_COLOR_F {
+            target.BeginDraw();
+            target.Clear(Some(&D2D1_COLOR_F {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
                 a: 1.0,
             }));
-            self.target.as_ref().unwrap().EndDraw(None, None)?;
-        };
+        }
+        for site in &self.sites {
+            unsafe {
+                target.DrawEllipse(&D2D1_ELLIPSE{ 
+                    point: D2D_POINT_2F{x: site.x, y: site.y}, 
+                    radiusX: 2.0, 
+                    radiusY: 2.0 }, 
+                    site_brush, 1.0,
+                     line_style);
+            }
+        }
+        unsafe { target.EndDraw(None, None)?};
         Ok(())
     }
 
     fn random_sites(&mut self) {
         let mut rng = rand::thread_rng();
         for _ in 0..self.site_count {
-            let x = rng.gen_range(0.0..=1.0);
-            let y = rng.gen_range(0.0..=1.0);
+            let x = rng.gen_range(0.0..=100.0);
+            let y = rng.gen_range(0.0..=100.0);
             self.sites.push(Site { x, y });
         }
         self.sites.sort_by(|&a, &b| a.partial_cmp(&b).unwrap());
@@ -127,6 +151,15 @@ impl<'a> Voronoi<'a> {
         self.target = Some(target);
 
         Ok(())
+    }
+
+    fn create_device_resources(&mut self) -> Result<()>{
+        self.site_brush = Some(create_brush(self.target.as_ref().unwrap(), 1.0, 0.0, 0.0, 1.0)?);
+        Ok(())
+    }
+
+    fn release_device_resources(&mut self) {
+        self.site_brush = None;
     }
 
     fn message_handler(&mut self, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -156,7 +189,6 @@ impl<'a> Voronoi<'a> {
         lparam: LPARAM,
     ) -> LRESULT {
         if message == WM_CREATE {
-            println!("WM_CREATE - voronoi window");
             let create_struct = lparam.0 as *const CREATESTRUCTA;
             let this = (*create_struct).lpCreateParams as *mut Self;
             (*this).hwnd = hwnd;

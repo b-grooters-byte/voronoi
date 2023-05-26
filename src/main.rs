@@ -89,7 +89,7 @@ impl<'a> AppWindow<'a> {
     ) -> windows::Win32::Foundation::LRESULT {
         match message {
             WM_CREATE => {
-                match voronoi::Voronoi::new(10, self.hwnd, self.factory) {
+                match voronoi::Voronoi::new(100, self.hwnd, self.factory) {
                     Ok(v) => {
                         self.voronoi = Some(v);
                         LRESULT(0)
@@ -143,7 +143,6 @@ impl<'a> AppWindow<'a> {
         lparam: LPARAM,
     ) -> LRESULT {
         if message == WM_CREATE {
-            println!("WM_CREATE - application window");
             let create_struct = lparam.0 as *const CREATESTRUCTA;
             let this = (*create_struct).lpCreateParams as *mut Self;
             (*this).hwnd = hwnd;

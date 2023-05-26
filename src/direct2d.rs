@@ -1,4 +1,4 @@
-use windows::{core::*, Win32::Graphics::Direct2D::*};
+use windows::{core::*, Win32::Graphics::Direct2D::{*, Common::D2D1_COLOR_F}, Foundation::Numerics::Matrix3x2};
 
 /// Creates a single threaded Direct2D factory with default options.
 pub fn create_factory() -> Result<ID2D1Factory1> {
@@ -25,4 +25,16 @@ pub fn create_stroke_style(
         props.dashStyle = D2D1_DASH_STYLE_CUSTOM;
     }
     unsafe { factory.CreateStrokeStyle(&props, dashes) }
+}
+
+pub fn create_brush(
+    target: &ID2D1HwndRenderTarget,
+    r: f32, g: f32, b: f32, a: f32,
+) -> Result<ID2D1SolidColorBrush> {
+    unsafe { target.CreateSolidColorBrush(&D2D1_COLOR_F{r,g,b,a}, None)? };
+    let properties = D2D1_BRUSH_PROPERTIES {
+        opacity: 0.8,
+        transform: Matrix3x2::identity(),
+    };
+    unsafe { target.CreateSolidColorBrush(&D2D1_COLOR_F{r,g,b,a}, Some(&properties)) }
 }
