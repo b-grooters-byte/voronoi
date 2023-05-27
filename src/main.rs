@@ -14,7 +14,8 @@ use windows::{
             AdjustWindowRect, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
             GetWindowLongPtrA, GetWindowRect, PostQuitMessage, RegisterClassW, SetWindowLongPtrA,
             SetWindowPos, ShowWindow, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, MSG, SWP_NOMOVE,
-            SW_SHOW, WM_CREATE, WM_DESTROY, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+            SW_SHOW, WM_CREATE, WM_DESTROY, WM_MOUSEMOVE, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE,
         },
     },
 };

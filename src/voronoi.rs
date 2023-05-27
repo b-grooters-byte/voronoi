@@ -17,10 +17,10 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrA, LoadCursorW,
-            SetWindowLongPtrA, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW,
-            WINDOW_EX_STYLE, WM_CREATE, WM_PAINT, WM_SIZE, WS_CHILDWINDOW, WS_CLIPSIBLINGS,
-            WS_VISIBLE,
+            CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrA, GetWindowRect,
+            LoadCursorW, SetWindowLongPtrA, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, HMENU,
+            IDC_ARROW, WINDOW_EX_STYLE, WM_CREATE, WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WS_CHILDWINDOW,
+            WS_CLIPSIBLINGS, WS_VISIBLE,
         },
     },
 };
@@ -36,8 +36,9 @@ pub struct Voronoi<'a> {
     site_count: u16,
     sites: Vec<Site>,
     site_brush: Option<ID2D1SolidColorBrush>,
-    site_line_style: ID2D1StrokeStyle,
     sweep_line: f32,
+    sweep_line_brush: Option<ID2D1SolidColorBrush>,
+    default_line_style: ID2D1StrokeStyle,
 }
 
 impl<'a> Voronoi<'a> {
@@ -64,9 +65,10 @@ impl<'a> Voronoi<'a> {
             target: None,
             site_count: sites,
             sites: Vec::new(),
-            sweep_line: 0.0,
             site_brush: None,
-            site_line_style: line_style,
+            sweep_line: 0.0,
+            sweep_line_brush: None,
+            default_line_style: line_style,
         });
 
         voronoi.random_sites(100, 100);
@@ -99,10 +101,12 @@ impl<'a> Voronoi<'a> {
             self.create_render_target()?;
             self.create_device_resources()?;
         }
-
+        let mut rect: RECT = RECT::default();
+        unsafe { GetWindowRect(self.hwnd, &mut rect) };
         let target = self.target.as_ref().unwrap();
         let site_brush = self.site_brush.as_ref().unwrap();
-        let line_style = &self.site_line_style;
+        let sweep_line_brush = self.sweep_line_brush.as_ref().unwrap();
+        let line_style = &self.default_line_style;
         unsafe {
             target.BeginDraw();
             target.Clear(Some(&D2D1_COLOR_F {
@@ -129,6 +133,21 @@ impl<'a> Voronoi<'a> {
                 );
             }
         }
+        unsafe {
+            target.DrawLine(
+                D2D_POINT_2F {
+                    x: 0.0,
+                    y: self.sweep_line,
+                },
+                D2D_POINT_2F {
+                    x: (rect.right - rect.left) as f32,
+                    y: self.sweep_line,
+                },
+                sweep_line_brush,
+                1.0,
+                line_style,
+            )
+        };
         unsafe { target.EndDraw(None, None)? };
         Ok(())
     }
@@ -170,11 +189,19 @@ impl<'a> Voronoi<'a> {
             0.0,
             1.0,
         )?);
+        self.sweep_line_brush = Some(create_brush(
+            self.target.as_ref().unwrap(),
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+        )?);
         Ok(())
     }
 
     fn release_device_resources(&mut self) {
         self.site_brush = None;
+        self.sweep_line_brush = None;
     }
 
     fn message_handler(&mut self, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -185,6 +212,25 @@ impl<'a> Voronoi<'a> {
                     BeginPaint(self.hwnd, &mut ps);
                     self.render().expect("unable to render");
                     EndPaint(self.hwnd, &ps);
+                }
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                let prev_sweep_line = self.sweep_line;
+                let pos = mouse_position(lparam);
+                self.sweep_line = pos.1;
+                let mut rect: RECT = RECT::default();
+                unsafe { GetWindowRect(self.hwnd, &mut rect) };
+                unsafe {
+                    if prev_sweep_line < self.sweep_line {
+                        rect.top = prev_sweep_line as i32;
+                        rect.bottom = self.sweep_line as i32;
+                    } else {
+                        rect.top = self.sweep_line as i32;
+                        rect.bottom = prev_sweep_line as i32;
+                    }
+                    println!("rect: {:?}", rect);
+                    InvalidateRect(self.hwnd, Some(&rect), true);
                 }
                 LRESULT(0)
             }
