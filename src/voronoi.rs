@@ -8,21 +8,24 @@ use windows::{
         Foundation::{COLORREF, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
             Direct2D::{
-                Common::{D2D1_COLOR_F, D2D_POINT_2F}, ID2D1Factory1, ID2D1HwndRenderTarget,
-                D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
-                D2D1_RENDER_TARGET_PROPERTIES, D2D1_ELLIPSE, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+                Common::{D2D1_COLOR_F, D2D_POINT_2F},
+                ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+                D2D1_ELLIPSE, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
+                D2D1_RENDER_TARGET_PROPERTIES,
             },
-            Gdi::{CreateSolidBrush, PAINTSTRUCT, BeginPaint, EndPaint},
+            Gdi::{BeginPaint, CreateSolidBrush, EndPaint, InvalidateRect, PAINTSTRUCT},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            DefWindowProcW, GetClientRect, GetWindowLongPtrA, LoadCursorW, SetWindowLongPtrA,
-            CREATESTRUCTA, GWLP_USERDATA, IDC_ARROW, WM_CREATE, CreateWindowExW, WINDOW_EX_STYLE, WS_VISIBLE, WS_CLIPSIBLINGS, WS_CHILDWINDOW, CW_USEDEFAULT, HMENU, WM_PAINT, WM_SIZE,
+            CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrA, LoadCursorW,
+            SetWindowLongPtrA, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW,
+            WINDOW_EX_STYLE, WM_CREATE, WM_PAINT, WM_SIZE, WS_CHILDWINDOW, WS_CLIPSIBLINGS,
+            WS_VISIBLE,
         },
     },
 };
 
-use crate::direct2d::{create_stroke_style, create_brush};
+use crate::direct2d::{create_brush, create_stroke_style};
 
 static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
 
@@ -66,7 +69,7 @@ impl<'a> Voronoi<'a> {
             site_line_style: line_style,
         });
 
-        voronoi.random_sites();
+        voronoi.random_sites(100, 100);
 
         let _window = unsafe {
             CreateWindowExW(
@@ -91,8 +94,6 @@ impl<'a> Voronoi<'a> {
         self.hwnd
     }
 
-
-
     pub fn render(&mut self) -> Result<()> {
         if self.target.is_none() {
             self.create_render_target()?;
@@ -113,23 +114,31 @@ impl<'a> Voronoi<'a> {
         }
         for site in &self.sites {
             unsafe {
-                target.DrawEllipse(&D2D1_ELLIPSE{ 
-                    point: D2D_POINT_2F{x: site.x, y: site.y}, 
-                    radiusX: 2.0, 
-                    radiusY: 2.0 }, 
-                    site_brush, 1.0,
-                     line_style);
+                target.DrawEllipse(
+                    &D2D1_ELLIPSE {
+                        point: D2D_POINT_2F {
+                            x: site.x,
+                            y: site.y,
+                        },
+                        radiusX: 2.0,
+                        radiusY: 2.0,
+                    },
+                    site_brush,
+                    1.0,
+                    line_style,
+                );
             }
         }
-        unsafe { target.EndDraw(None, None)?};
+        unsafe { target.EndDraw(None, None)? };
         Ok(())
     }
 
-    fn random_sites(&mut self) {
+    fn random_sites(&mut self, width: u32, height: u32) {
+        self.sites.clear();
         let mut rng = rand::thread_rng();
         for _ in 0..self.site_count {
-            let x = rng.gen_range(0.0..=100.0);
-            let y = rng.gen_range(0.0..=100.0);
+            let x = rng.gen_range(0.0..=width as f32);
+            let y = rng.gen_range(0.0..=height as f32);
             self.sites.push(Site { x, y });
         }
         self.sites.sort_by(|&a, &b| a.partial_cmp(&b).unwrap());
@@ -153,8 +162,14 @@ impl<'a> Voronoi<'a> {
         Ok(())
     }
 
-    fn create_device_resources(&mut self) -> Result<()>{
-        self.site_brush = Some(create_brush(self.target.as_ref().unwrap(), 1.0, 0.0, 0.0, 1.0)?);
+    fn create_device_resources(&mut self) -> Result<()> {
+        self.site_brush = Some(create_brush(
+            self.target.as_ref().unwrap(),
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+        )?);
         Ok(())
     }
 
@@ -174,11 +189,19 @@ impl<'a> Voronoi<'a> {
                 LRESULT(0)
             }
             WM_SIZE => {
+                let size = size(lparam);
+                self.random_sites(size.0, size.1);
+                self.release_device_resources();
+                self.create_render_target()
+                    .expect("unable to create render target");
+                self.create_device_resources()
+                    .expect("unable to create device resources");
+                unsafe {
+                    InvalidateRect(self.hwnd, None, true);
+                }
                 LRESULT(0)
             }
-            _ => {
-                unsafe { DefWindowProcW(self.hwnd, message, wparam, lparam) }
-            },
+            _ => unsafe { DefWindowProcW(self.hwnd, message, wparam, lparam) },
         }
     }
 
@@ -215,4 +238,18 @@ impl PartialOrd for Site {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.y.partial_cmp(&other.y)
     }
+}
+
+fn mouse_position(lparam: LPARAM) -> (f32, f32) {
+    (
+        (lparam.0 & 0x0000_FFFF) as f32,
+        ((lparam.0 & 0xFFFF_0000) >> 16) as f32,
+    )
+}
+
+fn size(lparam: LPARAM) -> (u32, u32) {
+    (
+        (lparam.0 & 0x0000_FFFF) as u32,
+        ((lparam.0 & 0xFFFF_0000) >> 16) as u32,
+    )
 }

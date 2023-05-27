@@ -7,13 +7,14 @@ use windows::{
     core::{Result, HSTRING},
     w,
     Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT},
+        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::Direct2D::ID2D1Factory1,
         System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, PostQuitMessage,
-            RegisterClassW, ShowWindow, CW_USEDEFAULT, MSG, SW_SHOW, WM_DESTROY, WNDCLASSW,
-            WS_OVERLAPPEDWINDOW, WM_CREATE, GetWindowRect, SetWindowLongPtrA, CREATESTRUCTA, GWLP_USERDATA, GetWindowLongPtrA, WS_VISIBLE, AdjustWindowRect, SetWindowPos, SWP_NOMOVE, WM_SIZE,
+            AdjustWindowRect, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+            GetWindowLongPtrA, GetWindowRect, PostQuitMessage, RegisterClassW, SetWindowLongPtrA,
+            SetWindowPos, ShowWindow, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, MSG, SWP_NOMOVE,
+            SW_SHOW, WM_CREATE, WM_DESTROY, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
         },
     },
 };
@@ -88,43 +89,30 @@ impl<'a> AppWindow<'a> {
         lparam: LPARAM,
     ) -> windows::Win32::Foundation::LRESULT {
         match message {
-            WM_CREATE => {
-                match voronoi::Voronoi::new(100, self.hwnd, self.factory) {
-                    Ok(v) => {
-                        self.voronoi = Some(v);
-                        LRESULT(0)
-                    }
-                    Err(e) => {
-                        LRESULT(-1)
-                    }
+            WM_CREATE => match voronoi::Voronoi::new(100, self.hwnd, self.factory) {
+                Ok(v) => {
+                    self.voronoi = Some(v);
+                    LRESULT(0)
                 }
-            }   
+                Err(e) => LRESULT(-1),
+            },
             WM_SIZE => {
                 if self.voronoi.is_none() {
                     return LRESULT(0);
                 }
                 let mut rect = RECT::default();
-                let mut child_rect = RECT::default();
                 unsafe {
                     GetWindowRect(self.hwnd, &mut rect);
-                    GetWindowRect(
+                    AdjustWindowRect(&mut rect, WS_VISIBLE | WS_OVERLAPPEDWINDOW, false);
+                    SetWindowPos(
                         self.voronoi.as_ref().unwrap().hwnd(),
-                        &mut child_rect,
+                        None,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOMOVE,
                     );
-                    AdjustWindowRect(
-                        &mut rect,
-                        WS_VISIBLE | WS_OVERLAPPEDWINDOW,
-                        false,
-                    );
-                SetWindowPos(
-                    self.voronoi.as_ref().unwrap().hwnd(),
-                    None,
-                    rect.left,
-                    rect.top,
-                    rect.right - rect.left,
-                    rect.bottom - rect.top,
-                    SWP_NOMOVE,
-                );
                 }
                 LRESULT(0)
             }
