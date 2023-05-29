@@ -13,7 +13,7 @@ use windows::{
                 D2D1_ELLIPSE, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
                 D2D1_RENDER_TARGET_PROPERTIES,
             },
-            Gdi::{BeginPaint, CreateSolidBrush, EndPaint, InvalidateRect, PAINTSTRUCT},
+            Gdi::{BeginPaint, CreateSolidBrush, EndPaint, InvalidateRect, PAINTSTRUCT, GetClipRgn},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
@@ -26,6 +26,8 @@ use windows::{
 };
 
 use crate::direct2d::{create_brush, create_stroke_style};
+
+const PARABOLA_X_STEP: usize = 5;
 
 static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
 
@@ -102,7 +104,7 @@ impl<'a> Voronoi<'a> {
             self.create_device_resources()?;
         }
         let mut rect: RECT = RECT::default();
-        unsafe { GetWindowRect(self.hwnd, &mut rect) };
+        unsafe { GetClientRect(self.hwnd, &mut rect) };
         let target = self.target.as_ref().unwrap();
         let site_brush = self.site_brush.as_ref().unwrap();
         let sweep_line_brush = self.sweep_line_brush.as_ref().unwrap();
@@ -140,7 +142,7 @@ impl<'a> Voronoi<'a> {
                     y: self.sweep_line,
                 },
                 D2D_POINT_2F {
-                    x: (rect.right - rect.left) as f32,
+                    x: rect.right as f32,
                     y: self.sweep_line,
                 },
                 sweep_line_brush,
@@ -149,6 +151,15 @@ impl<'a> Voronoi<'a> {
             )
         };
         unsafe { target.EndDraw(None, None)? };
+        Ok(())
+    }
+
+    fn render_beach_line(&mut self) -> Result<()> {
+        for site in &self.sites {
+            if site.y <= self.sweep_line {
+                
+            }
+        }
         Ok(())
     }
 
@@ -222,7 +233,7 @@ impl<'a> Voronoi<'a> {
                 let mut rect: RECT = RECT::default();
                 unsafe { GetWindowRect(self.hwnd, &mut rect) };
                 unsafe {
-                    if prev_sweep_line < self.sweep_line {
+                    if prev_sweep_line <= self.sweep_line {
                         rect.top = prev_sweep_line as i32;
                         rect.bottom = self.sweep_line as i32;
                     } else {
