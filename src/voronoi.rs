@@ -13,7 +13,7 @@ use windows::{
                 D2D1_ELLIPSE, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
                 D2D1_RENDER_TARGET_PROPERTIES,
             },
-            Gdi::{BeginPaint, CreateSolidBrush, EndPaint, InvalidateRect, PAINTSTRUCT, GetClipRgn},
+            Gdi::{BeginPaint, CreateSolidBrush, EndPaint, InvalidateRect, PAINTSTRUCT},
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
@@ -48,7 +48,7 @@ pub struct Voronoi<'a> {
 impl<'a> Voronoi<'a> {
     pub fn new(sites: u16, parent: HWND, factory: &'a ID2D1Factory1) -> Result<Box<Self>> {
         let instance = unsafe { GetModuleHandleW(None)? };
-        let line_style = create_stroke_style(&factory, None)?;
+        let line_style = create_stroke_style(factory, None)?;
         let class_name = w!("mars.window.voronoi.view");
 
         REGISTER_VORONOI_WINDOW_CLASS.call_once(|| {
@@ -166,8 +166,6 @@ impl<'a> Voronoi<'a> {
                 let mut rendering = false;
                 let mut stop_render = false;
                 let mut prev = D2D_POINT_2F { x: 0.0, y: 0.0 }; 
-                let mut prev_x: usize = 0;
-                let mut prev_y: Option<f64> = None;
                 let start_x = cmp::max(clip.left - PARABOLA_X_STEP as i32, 0) as usize;
                 let end_x = clip.right as usize + PARABOLA_X_STEP;
                 for x in (start_x..=end_x).step_by(PARABOLA_X_STEP) {
@@ -277,7 +275,6 @@ impl<'a> Voronoi<'a> {
                         rect.top = self.sweep_line as i32;
                         rect.bottom = prev_sweep_line as i32;
                     }
-                    println!("rect: {:?}", rect);
                     InvalidateRect(self.hwnd, Some(&rect), true);
                 }
                 LRESULT(0)

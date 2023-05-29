@@ -14,7 +14,7 @@ use windows::{
             AdjustWindowRect, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
             GetWindowLongPtrA, GetWindowRect, PostQuitMessage, RegisterClassW, SetWindowLongPtrA,
             SetWindowPos, ShowWindow, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, MSG, SWP_NOMOVE,
-            SW_SHOW, WM_CREATE, WM_DESTROY, WM_MOUSEMOVE, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+            SW_SHOW, WM_CREATE, WM_DESTROY, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
             WS_VISIBLE,
         },
     },
@@ -95,7 +95,7 @@ impl<'a> AppWindow<'a> {
                     self.voronoi = Some(v);
                     LRESULT(0)
                 }
-                Err(e) => LRESULT(-1),
+                Err(_e) => LRESULT(-1),
             },
             WM_SIZE => {
                 if self.voronoi.is_none() {
