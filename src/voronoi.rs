@@ -1,4 +1,4 @@
-use std::sync::Once;
+use std::{sync::Once, cmp};
 
 use rand::Rng;
 use windows::{
@@ -40,7 +40,9 @@ pub struct Voronoi<'a> {
     site_brush: Option<ID2D1SolidColorBrush>,
     sweep_line: f32,
     sweep_line_brush: Option<ID2D1SolidColorBrush>,
+    beach_line_brush: Option<ID2D1SolidColorBrush>,
     default_line_style: ID2D1StrokeStyle,
+
 }
 
 impl<'a> Voronoi<'a> {
@@ -70,6 +72,7 @@ impl<'a> Voronoi<'a> {
             site_brush: None,
             sweep_line: 0.0,
             sweep_line_brush: None,
+            beach_line_brush: None,
             default_line_style: line_style,
         });
 
@@ -150,14 +153,40 @@ impl<'a> Voronoi<'a> {
                 line_style,
             )
         };
+        self.render_beach_line(&rect, target)?;
         unsafe { target.EndDraw(None, None)? };
         Ok(())
     }
 
-    fn render_beach_line(&mut self) -> Result<()> {
+    fn render_beach_line(&self, clip: &RECT, target: &ID2D1HwndRenderTarget) -> Result<()> {
+        let line_style = &self.default_line_style;
+        let beach_line_brush = self.beach_line_brush.as_ref().unwrap();
         for site in &self.sites {
             if site.y <= self.sweep_line {
-                
+                let mut rendering = false;
+                let mut stop_render = false;
+                let mut prev = D2D_POINT_2F { x: 0.0, y: 0.0 }; 
+                let mut prev_x: usize = 0;
+                let mut prev_y: Option<f64> = None;
+                let start_x = cmp::max(clip.left - PARABOLA_X_STEP as i32, 0) as usize;
+                let end_x = clip.right as usize + PARABOLA_X_STEP;
+                for x in (start_x..=end_x).step_by(PARABOLA_X_STEP) {
+                    let y = 1.0 / (2.0 * (site.y - self.sweep_line)) * ((x as f32 - site.x) * (x as f32 - site.x))
+                        + ((site.y + self.sweep_line) / 2.0);
+                    if rendering {
+                        let p = D2D_POINT_2F { x: x as f32, y };
+                        unsafe {target.DrawLine(prev, p, beach_line_brush, 1.0, line_style) };
+                    }else if y > 0.0 && y < self.sweep_line && !rendering {
+                        rendering = true;
+                    } 
+
+                    prev.x = x as f32;
+                    prev.y = y;
+                    if stop_render {
+                        break;
+                    }
+                    stop_render = rendering && (y < 0.0 );
+                }            
             }
         }
         Ok(())
@@ -202,9 +231,16 @@ impl<'a> Voronoi<'a> {
         )?);
         self.sweep_line_brush = Some(create_brush(
             self.target.as_ref().unwrap(),
-            1.0,
+            0.0,
             1.0,
             0.0,
+            1.0,
+        )?);
+        self.beach_line_brush = Some(create_brush(
+            self.target.as_ref().unwrap(),
+            0.0,
+            0.0,
+            1.0,
             1.0,
         )?);
         Ok(())
@@ -213,6 +249,7 @@ impl<'a> Voronoi<'a> {
     fn release_device_resources(&mut self) {
         self.site_brush = None;
         self.sweep_line_brush = None;
+        self.beach_line_brush = None;
     }
 
     fn message_handler(&mut self, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
