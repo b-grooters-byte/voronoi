@@ -31,6 +31,9 @@ const PARABOLA_X_STEP: usize = 5;
 
 static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
 
+pub struct SiteEvent;
+pub struct CircleEvent;
+
 pub struct Voronoi<'a> {
     hwnd: HWND,
     factory: &'a ID2D1Factory1,
