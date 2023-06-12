@@ -31,8 +31,34 @@ const PARABOLA_X_STEP: usize = 5;
 
 static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
 
+#[derive(Default, Clone, PartialEq, Debug)]
+struct Site {
+    x: f32,
+    y: f32,
+    half_edge: Option<(Edge, Edge)>,
+}
+
+impl PartialOrd for Site {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.y.partial_cmp(&other.y)
+    }
+}
+
 pub struct SiteEvent;
 pub struct CircleEvent;
+
+pub struct Cell {
+    site: Site,
+    edges: Vec<Edge>,
+}
+
+#[derive(Default, Clone, PartialEq, Debug)]
+pub struct Edge {
+    start: D2D_POINT_2F,
+    end: D2D_POINT_2F,
+}
+
+
 
 pub struct Voronoi<'a> {
     hwnd: HWND,
@@ -45,7 +71,7 @@ pub struct Voronoi<'a> {
     sweep_line_brush: Option<ID2D1SolidColorBrush>,
     beach_line_brush: Option<ID2D1SolidColorBrush>,
     default_line_style: ID2D1StrokeStyle,
-
+    beach_line: Vec<Site>,
 }
 
 impl<'a> Voronoi<'a> {
@@ -77,6 +103,7 @@ impl<'a> Voronoi<'a> {
             sweep_line_brush: None,
             beach_line_brush: None,
             default_line_style: line_style,
+            beach_line: Vec::new(),
         });
 
         voronoi.random_sites(100, 100);
@@ -199,9 +226,9 @@ impl<'a> Voronoi<'a> {
         for _ in 0..self.site_count {
             let x = rng.gen_range(0.0..=width as f32);
             let y = rng.gen_range(0.0..=height as f32);
-            self.sites.push(Site { x, y });
+            self.sites.push(Site { x, y, half_edge: None });
         }
-        self.sites.sort_by(|&a, &b| a.partial_cmp(&b).unwrap());
+        self.sites.sort_by(|a, b| a.partial_cmp(b).unwrap());
     }
 
     fn create_render_target(&mut self) -> Result<()> {
@@ -322,17 +349,7 @@ impl<'a> Voronoi<'a> {
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Debug)]
-struct Site {
-    x: f32,
-    y: f32,
-}
 
-impl PartialOrd for Site {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.y.partial_cmp(&other.y)
-    }
-}
 
 fn mouse_position(lparam: LPARAM) -> (f32, f32) {
     (
