@@ -1,366 +1,180 @@
-use std::{sync::Once, cmp};
+use std::cmp;
 
-use rand::Rng;
-use windows::{
-    core::{Result, HSTRING},
-    w,
-    Win32::{
-        Foundation::{COLORREF, HMODULE, HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::{
-            Direct2D::{
-                Common::{D2D1_COLOR_F, D2D_POINT_2F},
-                ID2D1Factory1, ID2D1HwndRenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
-                D2D1_ELLIPSE, D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_PRESENT_OPTIONS,
-                D2D1_RENDER_TARGET_PROPERTIES,
-            },
-            Gdi::{BeginPaint, CreateSolidBrush, EndPaint, InvalidateRect, PAINTSTRUCT},
-        },
-        System::LibraryLoader::GetModuleHandleW,
-        UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongPtrA, GetWindowRect,
-            LoadCursorW, SetWindowLongPtrA, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, HMENU,
-            IDC_ARROW, WINDOW_EX_STYLE, WM_CREATE, WM_MOUSEMOVE, WM_PAINT, WM_SIZE, WS_CHILDWINDOW,
-            WS_CLIPSIBLINGS, WS_VISIBLE,
-        },
-    },
-};
+use gtk4::cairo;
 
-use crate::direct2d::{create_brush, create_stroke_style};
 
-const PARABOLA_X_STEP: usize = 5;
+pub const PARABOLA_X_STEP: usize = 5;
 
-static REGISTER_VORONOI_WINDOW_CLASS: Once = Once::new();
-
-#[derive(Default, Clone, PartialEq, Debug)]
-struct Site {
-    x: f32,
-    y: f32,
-    half_edge: Option<(Edge, Edge)>,
+#[derive(Debug, Copy, Clone)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
 }
 
-impl PartialOrd for Site {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.y.partial_cmp(&other.y)
-    }
-}
-
-pub struct SiteEvent;
-pub struct CircleEvent;
-
-pub struct Cell {
-    site: Site,
-    edges: Vec<Edge>,
-}
-
-#[derive(Default, Clone, PartialEq, Debug)]
-pub struct Edge {
-    start: D2D_POINT_2F,
-    end: D2D_POINT_2F,
+/// Site is a simple truct that represents the current state of a simplified
+/// Voronoi site. The fields are :
+/// * x - X Position
+/// * y - Y Position
+/// * directrix - Directrix Y
+#[derive(Debug, Copy, Clone)]
+pub struct Site {
+    pub x: f64,
+    pub y: f64,
+    pub color: (f64, f64, f64),
+    pub last_point: (Point, Point),
 }
 
 
-
-pub struct Voronoi<'a> {
-    hwnd: HWND,
-    factory: &'a ID2D1Factory1,
-    target: Option<ID2D1HwndRenderTarget>,
-    site_count: u16,
-    sites: Vec<Site>,
-    site_brush: Option<ID2D1SolidColorBrush>,
-    sweep_line: f32,
-    sweep_line_brush: Option<ID2D1SolidColorBrush>,
-    beach_line_brush: Option<ID2D1SolidColorBrush>,
-    default_line_style: ID2D1StrokeStyle,
-    beach_line: Vec<Site>,
-}
-
-impl<'a> Voronoi<'a> {
-    pub fn new(sites: u16, parent: HWND, factory: &'a ID2D1Factory1) -> Result<Box<Self>> {
-        let instance = unsafe { GetModuleHandleW(None)? };
-        let line_style = create_stroke_style(factory, None)?;
-        let class_name = w!("mars.window.voronoi.view");
-
-        REGISTER_VORONOI_WINDOW_CLASS.call_once(|| {
-            let class = windows::Win32::UI::WindowsAndMessaging::WNDCLASSW {
-                lpfnWndProc: Some(Self::window_proc),
-                hInstance: instance,
-                hCursor: unsafe { LoadCursorW(HMODULE(0), IDC_ARROW).ok().unwrap() },
-                hbrBackground: unsafe { CreateSolidBrush(COLORREF(0)) },
-                lpszClassName: class_name,
-                ..Default::default()
-            };
-            unsafe { windows::Win32::UI::WindowsAndMessaging::RegisterClassW(&class) };
-        });
-
-        let mut voronoi = Box::new(Self {
-            hwnd: HWND(0),
-            factory,
-            target: None,
-            site_count: sites,
-            sites: Vec::new(),
-            site_brush: None,
-            sweep_line: 0.0,
-            sweep_line_brush: None,
-            beach_line_brush: None,
-            default_line_style: line_style,
-            beach_line: Vec::new(),
-        });
-
-        voronoi.random_sites(100, 100);
-
-        let _window = unsafe {
-            CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
-                class_name,
-                &HSTRING::from(""),
-                WS_VISIBLE | WS_CLIPSIBLINGS | WS_CHILDWINDOW,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT, //width as i32,
-                CW_USEDEFAULT, // height as i32,
-                parent,
-                HMENU(0),
-                instance,
-                Some(voronoi.as_mut() as *mut _ as _),
-            )
-        };
-        Ok(voronoi)
-    }
-
-    pub fn hwnd(&self) -> HWND {
-        self.hwnd
-    }
-
-    pub fn render(&mut self) -> Result<()> {
-        if self.target.is_none() {
-            self.create_render_target()?;
-            self.create_device_resources()?;
+impl Site {
+    /// Renders the current directrix based representation of a site.
+    pub fn draw(&self, directrix: f64, width: i32, height: i32, ctx: &cairo::Context) {
+        // get the clip region
+        let clip = ctx.clip_extents().unwrap();
+        // draw the origin
+        ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0);
+        ctx.set_line_width(1.0);
+        ctx.new_path();
+        ctx.arc(self.x, self.y, 2.0, 0.0, 2.0 * std::f64::consts::PI);
+        if let Err(_e) = ctx.stroke() {
+            // TODO handle error
         }
-        let mut rect: RECT = RECT::default();
-        unsafe { GetClientRect(self.hwnd, &mut rect) };
-        let target = self.target.as_ref().unwrap();
-        let site_brush = self.site_brush.as_ref().unwrap();
-        let sweep_line_brush = self.sweep_line_brush.as_ref().unwrap();
-        let line_style = &self.default_line_style;
-        unsafe {
-            target.BeginDraw();
-            target.Clear(Some(&D2D1_COLOR_F {
-                r: 0.0,
-                g: 0.0,
-                b: 0.0,
-                a: 1.0,
-            }));
+        // draw the parabola
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
+        ctx.new_path();
+
+        if directrix < self.y {
+            return;
         }
+        // used to start and stop the line_to once the arc is outside the visible window
+        let mut rendering = false;
+        let mut stop_render = false;
+        let mut prev_x: usize = 0;
+        let mut prev_y: Option<f64> = None;
+        ctx.set_line_width(0.5);
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 0.5);
+        ctx.new_path();
+        let start_x = cmp::max(clip.0 as i32 - PARABOLA_X_STEP as i32, 0) as usize;
+        let end_x = clip.2 as usize + PARABOLA_X_STEP;
+        for x in (start_x..=end_x).step_by(PARABOLA_X_STEP) {
+            let y = 1.0 / (2.0 * (self.y - directrix)) * ((x as f64 - self.x) * (x as f64 - self.x))
+                + ((self.y + directrix) / 2.0);
+            if rendering {
+                ctx.line_to(x as f64, y);
+            }
+            if y > 0.0 && y < clip.3 as f64 && !rendering {
+                rendering = true;
+                if let Some(y) = prev_y {
+                    ctx.move_to(prev_x as f64, y);
+                } else {
+                    ctx.move_to(x as f64, y);
+                }
+            } else {
+                prev_x = x;
+                prev_y = Some(y);
+            }
+            if stop_render {
+                break;
+            }
+            stop_render = rendering && (y < 0.0 || y > height as f64);
+        }
+        if let Err(_e) = ctx.stroke() {
+            // TODO handle error
+        }
+    }
+}
+    
+
+#[derive(Debug, Clone)]
+pub struct Voronoi {
+    pub width: i32,
+    pub height: i32,
+    pub directrix: f64,
+    pub sites: Vec<Site>,
+    pub active_sites: Vec<Site>,
+}
+
+impl Voronoi {
+    pub fn new(width: i32, height: i32) -> Self {
+        Voronoi { width, height, directrix: 0.0, sites: Vec::new(), active_sites: Vec::new() }
+    }
+
+    pub fn new_random(num_sites: usize, width: i32, height: i32) -> Self {
+        let mut sites = Vec::new();
+        for _ in 0..num_sites {
+            let x = rand::random::<f64>() * width as f64;
+            let y = rand::random::<f64>() * height as f64;
+            let color = (rand::random::<f64>(), rand::random::<f64>(), rand::random::<f64>());
+            let last_point = (Point { x, y }, Point { x, y });
+            sites.push(Site { x, y, color, last_point        });
+        }
+        Voronoi { width, height, directrix: 0.0, sites, active_sites: Vec::new() }
+    }
+
+    pub fn draw(&self, width: i32, height: i32, ctx: &cairo::Context) {
         for site in &self.sites {
-            unsafe {
-                target.DrawEllipse(
-                    &D2D1_ELLIPSE {
-                        point: D2D_POINT_2F {
-                            x: site.x,
-                            y: site.y,
-                        },
-                        radiusX: 2.0,
-                        radiusY: 2.0,
-                    },
-                    site_brush,
-                    1.0,
-                    line_style,
-                );
-            }
+            site.draw(self.directrix,width, height, ctx);
         }
-        unsafe {
-            target.DrawLine(
-                D2D_POINT_2F {
-                    x: 0.0,
-                    y: self.sweep_line,
-                },
-                D2D_POINT_2F {
-                    x: rect.right as f32,
-                    y: self.sweep_line,
-                },
-                sweep_line_brush,
-                1.0,
-                line_style,
-            )
-        };
-        self.render_beach_line(&rect, target)?;
-        unsafe { target.EndDraw(None, None)? };
-        Ok(())
-    }
-
-    fn render_beach_line(&self, clip: &RECT, target: &ID2D1HwndRenderTarget) -> Result<()> {
-        let line_style = &self.default_line_style;
-        let beach_line_brush = self.beach_line_brush.as_ref().unwrap();
-        for site in &self.sites {
-            if site.y <= self.sweep_line {
-                let mut rendering = false;
-                let mut stop_render = false;
-                let mut prev = D2D_POINT_2F { x: 0.0, y: 0.0 }; 
-                let start_x = cmp::max(clip.left - PARABOLA_X_STEP as i32, 0) as usize;
-                let end_x = clip.right as usize + PARABOLA_X_STEP;
-                for x in (start_x..=end_x).step_by(PARABOLA_X_STEP) {
-                    let y = 1.0 / (2.0 * (site.y - self.sweep_line)) * ((x as f32 - site.x) * (x as f32 - site.x))
-                        + ((site.y + self.sweep_line) / 2.0);
-                    if rendering {
-                        let p = D2D_POINT_2F { x: x as f32, y };
-                        unsafe {target.DrawLine(prev, p, beach_line_brush, 1.0, line_style) };
-                    }else if y > 0.0 && y < self.sweep_line && !rendering {
-                        rendering = true;
-                    } 
-
-                    prev.x = x as f32;
-                    prev.y = y;
-                    if stop_render {
-                        break;
-                    }
-                    stop_render = rendering && (y < 0.0 );
-                }            
-            }
+        // render the text
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
+        ctx.select_font_face(
+            "Monospace",
+            cairo::FontSlant::Normal,
+            cairo::FontWeight::Normal,
+        );
+        ctx.set_font_size(12.0);
+        ctx.set_line_width(1.0);
+        ctx.move_to(8.0, 34.0);
+        if let Err(_e) = ctx.show_text(format!("Directrix: {}", self.directrix).as_str()) {
+            // TODO handle error
         }
-        Ok(())
+        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
+        ctx.move_to(0.0, self.directrix);
+        ctx.line_to(width as f64, self.directrix);
+        ctx.stroke().unwrap();
+        self.beachline(ctx);
     }
 
-    fn random_sites(&mut self, width: u32, height: u32) {
-        self.sites.clear();
-        let mut rng = rand::thread_rng();
-        for _ in 0..self.site_count {
-            let x = rng.gen_range(0.0..=width as f32);
-            let y = rng.gen_range(0.0..=height as f32);
-            self.sites.push(Site { x, y, half_edge: None });
+    fn beachline(&self, ctx: &cairo::Context) {
+        let clip = ctx.clip_extents().unwrap();
+        // TODO implement beachline
+        let mut x = 0.0;
+        let mut prev_site = Some(0);
+        let mut site_idx: usize = 0;
+        let active_sites: Vec<&Site> = self.sites.iter().filter(|s| 
+            s.y < self.directrix).collect();
+        if active_sites.is_empty() {
+            return;
         }
-        self.sites.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    }
-
-    fn create_render_target(&mut self) -> Result<()> {
-        let mut rect: RECT = RECT::default();
-        unsafe { GetClientRect(self.hwnd, &mut rect) };
-        let props = D2D1_RENDER_TARGET_PROPERTIES::default();
-        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd: self.hwnd,
-            pixelSize: windows::Win32::Graphics::Direct2D::Common::D2D_SIZE_U {
-                width: (rect.right - rect.left) as u32,
-                height: (rect.bottom - rect.top) as u32,
-            },
-            presentOptions: D2D1_PRESENT_OPTIONS::default(),
-        };
-        let target = unsafe { self.factory.CreateHwndRenderTarget(&props, &hwnd_props)? };
-        self.target = Some(target);
-
-        Ok(())
-    }
-
-    fn create_device_resources(&mut self) -> Result<()> {
-        self.site_brush = Some(create_brush(
-            self.target.as_ref().unwrap(),
-            1.0,
-            0.0,
-            0.0,
-            1.0,
-        )?);
-        self.sweep_line_brush = Some(create_brush(
-            self.target.as_ref().unwrap(),
-            0.0,
-            1.0,
-            0.0,
-            1.0,
-        )?);
-        self.beach_line_brush = Some(create_brush(
-            self.target.as_ref().unwrap(),
-            0.0,
-            0.0,
-            1.0,
-            1.0,
-        )?);
-        Ok(())
-    }
-
-    fn release_device_resources(&mut self) {
-        self.site_brush = None;
-        self.sweep_line_brush = None;
-        self.beach_line_brush = None;
-    }
-
-    fn message_handler(&mut self, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        match message {
-            WM_PAINT => {
-                let mut ps = PAINTSTRUCT::default();
-                unsafe {
-                    BeginPaint(self.hwnd, &mut ps);
-                    self.render().expect("unable to render");
-                    EndPaint(self.hwnd, &ps);
+        ctx.set_line_width(0.5);
+    
+        while x < self.width as f64 {
+            let mut max_y = std::f64::NEG_INFINITY;
+            for (idx, site) in active_sites.iter().enumerate() {
+                let y = 1.0 / (2.0 * (site.y - self.directrix)) * ((x - site.x) * (x - site.x))
+                    + ((site.y + self.directrix) / 2.0);
+                if y > max_y {
+                    max_y = y;
+                    site_idx = idx;
                 }
-                LRESULT(0)
             }
-            WM_MOUSEMOVE => {
-                let prev_sweep_line = self.sweep_line;
-                let pos = mouse_position(lparam);
-                self.sweep_line = pos.1;
-                let mut rect: RECT = RECT::default();
-                unsafe { GetWindowRect(self.hwnd, &mut rect) };
-                unsafe {
-                    if prev_sweep_line <= self.sweep_line {
-                        rect.top = prev_sweep_line as i32;
-                        rect.bottom = self.sweep_line as i32;
-                    } else {
-                        rect.top = self.sweep_line as i32;
-                        rect.bottom = prev_sweep_line as i32;
-                    }
-                    InvalidateRect(self.hwnd, Some(&rect), true);
-                }
-                LRESULT(0)
+            if prev_site.is_none() || prev_site.unwrap() != site_idx {
+                ctx.stroke().unwrap();
+                prev_site = Some(site_idx);
             }
-            WM_SIZE => {
-                let size = size(lparam);
-                self.random_sites(size.0, size.1);
-                self.release_device_resources();
-                self.create_render_target()
-                    .expect("unable to create render target");
-                self.create_device_resources()
-                    .expect("unable to create device resources");
-                unsafe {
-                    InvalidateRect(self.hwnd, None, true);
-                }
-                LRESULT(0)
-            }
-            _ => unsafe { DefWindowProcW(self.hwnd, message, wparam, lparam) },
-        }
+            x += 0.25;
+            let site_color = active_sites[site_idx].color;
+
+            if max_y >= 0.0 && max_y <= clip.3 as f64 {
+                println!("x: {}, max_y: {}, site_idx: {}", x, max_y, site_idx);
+                ctx.move_to(x as f64, max_y);
+                ctx.set_source_rgba(site_color.0, site_color.1, site_color.2, 1.0);
+                //ctx.new_path();
+                ctx.arc(x, max_y, 0.5, 0.0, 2.0 * std::f64::consts::PI);
+            } 
+        } 
+        if let  Err(_e) = ctx.stroke() {
+            println!("Error stroking beachline: {:?}", _e);
+        }   
+
     }
-
-    unsafe extern "system" fn window_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        if message == WM_CREATE {
-            let create_struct = lparam.0 as *const CREATESTRUCTA;
-            let this = (*create_struct).lpCreateParams as *mut Self;
-            (*this).hwnd = hwnd;
-
-            SetWindowLongPtrA(hwnd, GWLP_USERDATA, this as _);
-        } else {
-            let this = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut Self;
-
-            if !this.is_null() {
-                return (*this).message_handler(message, wparam, lparam);
-            }
-        }
-        DefWindowProcW(hwnd, message, wparam, lparam)
-    }
-}
-
-
-
-fn mouse_position(lparam: LPARAM) -> (f32, f32) {
-    (
-        (lparam.0 & 0x0000_FFFF) as f32,
-        ((lparam.0 & 0xFFFF_0000) >> 16) as f32,
-    )
-}
-
-fn size(lparam: LPARAM) -> (u32, u32) {
-    (
-        (lparam.0 & 0x0000_FFFF) as u32,
-        ((lparam.0 & 0xFFFF_0000) >> 16) as u32,
-    )
 }

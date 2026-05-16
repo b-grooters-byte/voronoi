@@ -1,147 +1,82 @@
-mod direct2d;
-mod voronoi;
+use gtk4::prelude::*;
+use gtk4::{Application, ApplicationWindow, DrawingArea};
+use gtk4::cairo;
+use std::cell::RefCell;
+use std::cmp;
+use std::rc::Rc;
 
-use std::sync::Once;
 
-use windows::{
-    core::{Result, HSTRING},
-    w,
-    Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::Direct2D::ID2D1Factory1,
-        System::Com::{CoInitializeEx, COINIT_MULTITHREADED},
-        UI::WindowsAndMessaging::{
-            AdjustWindowRect, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-            GetWindowLongPtrA, GetWindowRect, PostQuitMessage, RegisterClassW, SetWindowLongPtrA,
-            SetWindowPos, ShowWindow, CREATESTRUCTA, CW_USEDEFAULT, GWLP_USERDATA, MSG, SWP_NOMOVE,
-            SW_SHOW, WM_CREATE, WM_DESTROY, WM_SIZE, WNDCLASSW, WS_OVERLAPPEDWINDOW,
-            WS_VISIBLE,
-        },
-    },
-};
+pub mod voronoi;
 
-static REGISTER_WINDOW_CLASS: Once = Once::new();
+pub use voronoi::*;
 
-fn main() -> Result<()> {
-    unsafe {
-        CoInitializeEx(None, COINIT_MULTITHREADED)?;
-    }
-    let factory = direct2d::create_factory()?;
-    let _m = AppWindow::new("Voronoi", &factory);
-    let mut message = MSG::default();
-    unsafe {
-        while GetMessageW(&mut message, HWND(0), 0, 0).into() {
-            DispatchMessageW(&message);
-        }
-    }
-    Ok(())
+fn main() {
+
+    // create a new application
+    let app = Application::new(Some("org.bytetrail.dtx"), Default::default());
+    app.connect_activate(move |app| {
+        build_ui(app);
+    });
+    // run the application
+    app.run();
 }
 
-pub struct AppWindow<'a> {
-    hwnd: HWND,
-    factory: &'a ID2D1Factory1,
-    voronoi: Option<Box<voronoi::Voronoi<'a>>>,
-}
 
-impl<'a> AppWindow<'a> {
-    pub fn new(
-        title: &'static str,
-        factory: &'a ID2D1Factory1,
-    ) -> windows::core::Result<Box<Self>> {
-        let window_class = w!("mars.window.voronoi");
-        REGISTER_WINDOW_CLASS.call_once(|| {
-            let class = WNDCLASSW {
-                lpfnWndProc: Some(Self::window_proc),
-                lpszClassName: window_class,
-                ..Default::default()
-            };
-            assert_ne!(unsafe { RegisterClassW(&class) }, 0);
-        });
-        let mut app_window = Box::new(Self {
-            hwnd: HWND(0),
-            factory,
-            voronoi: None,
-        });
-        let hwnd = unsafe {
-            CreateWindowExW(
-                Default::default(),
-                window_class,
-                &HSTRING::from(title),
-                WS_OVERLAPPEDWINDOW,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                None,
-                None,
-                None,
-                Some(app_window.as_mut() as *mut _ as _),
-            )
-        };
-        unsafe { ShowWindow(hwnd, SW_SHOW) };
-        Ok(app_window)
-    }
+const WINDOW_INIT_WIDTH: i32 = 600;
+const WINDOW_INIT_HEIGHT: i32 = 400;
 
-    fn message_loop(
-        &mut self,
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> windows::Win32::Foundation::LRESULT {
-        match message {
-            WM_CREATE => match voronoi::Voronoi::new(100, self.hwnd, self.factory) {
-                Ok(v) => {
-                    self.voronoi = Some(v);
-                    LRESULT(0)
-                }
-                Err(_e) => LRESULT(-1),
-            },
-            WM_SIZE => {
-                if self.voronoi.is_none() {
-                    return LRESULT(0);
-                }
-                let mut rect = RECT::default();
-                unsafe {
-                    GetWindowRect(self.hwnd, &mut rect);
-                    AdjustWindowRect(&mut rect, WS_VISIBLE | WS_OVERLAPPEDWINDOW, false);
-                    SetWindowPos(
-                        self.voronoi.as_ref().unwrap().hwnd(),
-                        None,
-                        rect.left,
-                        rect.top,
-                        rect.right - rect.left,
-                        rect.bottom - rect.top,
-                        SWP_NOMOVE,
-                    );
-                }
-                LRESULT(0)
-            }
-            WM_DESTROY => {
-                unsafe { PostQuitMessage(0) };
-                LRESULT(0)
-            }
-            _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
-        }
-    }
 
-    unsafe extern "system" fn window_proc(
-        hwnd: HWND,
-        message: u32,
-        wparam: WPARAM,
-        lparam: LPARAM,
-    ) -> LRESULT {
-        if message == WM_CREATE {
-            let create_struct = lparam.0 as *const CREATESTRUCTA;
-            let this = (*create_struct).lpCreateParams as *mut Self;
-            (*this).hwnd = hwnd;
-            SetWindowLongPtrA(hwnd, GWLP_USERDATA, this as _);
-        }
-        let this = GetWindowLongPtrA(hwnd, GWLP_USERDATA) as *mut Self;
 
-        if !this.is_null() {
-            return (*this).message_loop(hwnd, message, wparam, lparam);
-        }
-        DefWindowProcW(hwnd, message, wparam, lparam)
-    }
+/// Builds the GTK UI with drawing area.
+fn build_ui(app: &Application) {
+    let mut voronoi = Voronoi::new_random(10, 
+        WINDOW_INIT_WIDTH, 
+        WINDOW_INIT_HEIGHT);
+    // create the window
+    let window = ApplicationWindow::new(app);
+    window.set_title(Some("Directrix"));
+    window.set_default_size(WINDOW_INIT_WIDTH, WINDOW_INIT_HEIGHT);
+    let canvas = DrawingArea::new();
+    canvas.set_content_width(WINDOW_INIT_WIDTH);
+    canvas.set_content_height(WINDOW_INIT_HEIGHT);
+    canvas.set_hexpand(true);
+    canvas.set_vexpand(true);
+
+    // create a reference counting smart pointer so that site may be passed to
+    // to each event closure. These all occur on the UI thread so Arc not
+    // necessary
+    let voronoi_rc = Rc::new(RefCell::new(voronoi));
+    let voronoi_clone = Rc::clone(&voronoi_rc);
+    // handle the draw request for DrawingArea
+    canvas.set_draw_func(move |area, ctx, width, height| {
+        let v = voronoi_clone.borrow();
+        v.draw(width, height, ctx);
+    });
+
+    // Mouse event controllers for GTK4
+    //let voronoi_clone = Rc::clone(&voronoi_rc);
+    //let click_canvas = canvas.clone();
+    //let click_controller = gtk4::GestureClick::new();
+    // click_controller.connect_released(move |_, n_press, x, y| {
+    //     if n_press == 1 {
+    //         let mut s = site_clone.borrow_mut();
+    //         s.x = x;
+    //         s.y = y;
+    //         click_canvas.queue_draw();
+    //     }
+    // });
+    // canvas.add_controller(click_controller);
+
+    let voronoi_clone = Rc::clone(&voronoi_rc);
+    let motion_canvas = canvas.clone();
+    let motion_controller = gtk4::EventControllerMotion::new();
+    motion_controller.connect_motion(move |_, _x, y| {
+        let mut v = voronoi_clone.borrow_mut();        
+        v.directrix = y;
+        motion_canvas.queue_draw();
+    });
+    canvas.add_controller(motion_controller);
+
+    window.set_child(Some(&canvas));
+    window.present();
 }
