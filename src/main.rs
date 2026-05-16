@@ -1,8 +1,6 @@
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, DrawingArea};
-use gtk4::cairo;
 use std::cell::RefCell;
-use std::cmp;
 use std::rc::Rc;
 
 
@@ -29,12 +27,12 @@ const WINDOW_INIT_HEIGHT: i32 = 400;
 
 /// Builds the GTK UI with drawing area.
 fn build_ui(app: &Application) {
-    let mut voronoi = Voronoi::new_random(10, 
+    let voronoi = Voronoi::new_random(15, 
         WINDOW_INIT_WIDTH, 
         WINDOW_INIT_HEIGHT);
     // create the window
     let window = ApplicationWindow::new(app);
-    window.set_title(Some("Directrix"));
+    window.set_title(Some("Voronoi Diagram"));
     window.set_default_size(WINDOW_INIT_WIDTH, WINDOW_INIT_HEIGHT);
     let canvas = DrawingArea::new();
     canvas.set_content_width(WINDOW_INIT_WIDTH);
@@ -48,7 +46,7 @@ fn build_ui(app: &Application) {
     let voronoi_rc = Rc::new(RefCell::new(voronoi));
     let voronoi_clone = Rc::clone(&voronoi_rc);
     // handle the draw request for DrawingArea
-    canvas.set_draw_func(move |area, ctx, width, height| {
+    canvas.set_draw_func(move |_area, ctx, width, height| {
         let v = voronoi_clone.borrow();
         v.draw(width, height, ctx);
     });
