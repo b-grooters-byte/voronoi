@@ -171,6 +171,19 @@ impl Voronoi {
         Voronoi { width, height, directrix: 0.0, sites, active_sites: Vec::new(), beachline: BeachLine::new() }
     }
 
+    /// Replaces all sites with a fresh random set and resets the sweep state.
+    pub fn regenerate(&mut self, count: usize) {
+        self.directrix = 0.0;
+        self.beachline = BeachLine::new();
+        self.sites.clear();
+        for _ in 0..count {
+            let x = rand::random::<f64>() * self.width as f64;
+            let y = rand::random::<f64>() * self.height as f64;
+            let color = (rand::random::<f64>(), rand::random::<f64>(), rand::random::<f64>());
+            self.sites.push(Site { x, y, color });
+        }
+    }
+
 
     /// Calculates the x coordinate of the breakpoint between two sites on the beachline
     /// given the current position of the directrix. This is done by solving the 
@@ -282,7 +295,6 @@ impl Voronoi {
             let site_color = active_sites[site_idx].color;
 
             if max_y >= 0.0 && max_y <= clip.3 as f64 {
-                println!("x: {}, max_y: {}, site_idx: {}", x, max_y, site_idx);
                 ctx.move_to(x as f64, max_y);
                 ctx.set_source_rgba(site_color.0, site_color.1, site_color.2, 1.0);
                 //ctx.new_path();

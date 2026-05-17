@@ -1,7 +1,11 @@
 use gtk4::prelude::*;
 use gtk4::{Application, ApplicationWindow, DrawingArea, Orientation};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 pub mod voronoi;
 pub use voronoi::*;
@@ -26,7 +30,6 @@ fn build_ui(app: &Application) {
     window.set_title(Some("Voronoi Diagram"));
     window.set_default_size(WINDOW_INIT_WIDTH, WINDOW_INIT_HEIGHT);
 
-    // Root horizontal container: control panel | separator | canvas
     let root = gtk4::Box::new(Orientation::Horizontal, 0);
 
     // ── Control panel ────────────────────────────────────────────────────────
@@ -37,7 +40,6 @@ fn build_ui(app: &Application) {
     controls.set_margin_end(12);
     controls.set_width_request(180);
 
-    // Sites
     let sites_label = gtk4::Label::new(Some("Sites"));
     sites_label.set_halign(gtk4::Align::Start);
     let sites_spin = gtk4::SpinButton::with_range(5.0, 50.0, 1.0);
@@ -46,35 +48,26 @@ fn build_ui(app: &Application) {
 
     controls.append(&sites_label);
     controls.append(&sites_spin);
-
     controls.append(&gtk4::Separator::new(Orientation::Horizontal));
 
-    // Speed (Fast ──slider── Slow)
     let speed_label = gtk4::Label::new(Some("Speed"));
     speed_label.set_halign(gtk4::Align::Start);
-
     let speed_row = gtk4::Box::new(Orientation::Horizontal, 4);
-    let fast_label = gtk4::Label::new(Some("Fast"));
-    let slow_label = gtk4::Label::new(Some("Slow"));
     let speed_scale = gtk4::Scale::with_range(Orientation::Horizontal, 1.0, 10.0, 1.0);
     speed_scale.set_draw_value(false);
     speed_scale.set_value(5.0);
     speed_scale.set_hexpand(true);
-
-    speed_row.append(&fast_label);
+    speed_row.append(&gtk4::Label::new(Some("Fast")));
     speed_row.append(&speed_scale);
-    speed_row.append(&slow_label);
+    speed_row.append(&gtk4::Label::new(Some("Slow")));
 
     controls.append(&speed_label);
     controls.append(&speed_row);
-
     controls.append(&gtk4::Separator::new(Orientation::Horizontal));
 
-    // Start / Stop / Reset
     let start_btn = gtk4::Button::with_label("Start");
     let stop_btn = gtk4::Button::with_label("Stop");
     let reset_btn = gtk4::Button::with_label("Reset");
-
     start_btn.set_hexpand(true);
     stop_btn.set_hexpand(true);
     reset_btn.set_hexpand(true);
@@ -101,15 +94,117 @@ fn build_ui(app: &Application) {
         v.draw(width, height, ctx);
     });
 
+    // ── Directrix channel: Tokio task → GLib main loop ───────────────────────
+    // tokio::sync::mpsc::Sender is Send so it moves into the Tokio task.
+    // glib::spawn_future_local runs the receiver loop on the GTK main thread,
+    // so it can safely capture Rc<RefCell<Voronoi>> and the canvas.
+    let (tx, mut rx): (tokio::sync::mpsc::Sender<f64>, tokio::sync::mpsc::Receiver<f64>) =
+        tokio::sync::mpsc::channel(64);
+
+    // sweep_running: true while a Tokio sweep task is active.
+    // Used to gate sites_spin sensitivity and ignore stale Done signals.
+    let sweep_running: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
     let voronoi_clone = Rc::clone(&voronoi_rc);
-    let motion_canvas = canvas.clone();
-    let motion_controller = gtk4::EventControllerMotion::new();
-    motion_controller.connect_motion(move |_, _x, y| {
-        let mut v = voronoi_clone.borrow_mut();
-        v.directrix = y;
-        motion_canvas.queue_draw();
+    let canvas_rx = canvas.clone();
+    let sites_spin_rx = sites_spin.clone();
+    let sweep_running_rx = Rc::clone(&sweep_running);
+    glib::spawn_future_local(async move {
+        while let Some(y) = rx.recv().await {
+            if y == f64::NEG_INFINITY {
+                // Sweep task signalled natural completion; only re-enable if we
+                // haven't already re-enabled via Stop/Reset.
+                if sweep_running_rx.get() {
+                    sweep_running_rx.set(false);
+                    sites_spin_rx.set_sensitive(true);
+                }
+            } else {
+                let mut v = voronoi_clone.borrow_mut();
+                v.directrix = y;
+                canvas_rx.queue_draw();
+            }
+        }
     });
-    canvas.add_controller(motion_controller);
+
+    // ── Shared Tokio runtime ─────────────────────────────────────────────────
+    let rt = Rc::new(
+        tokio::runtime::Runtime::new().expect("failed to create tokio runtime"),
+    );
+
+    // stop_flag is replaced on each Start so each task has its own independent
+    // cancellation token.
+    let stop_flag: Rc<RefCell<Arc<AtomicBool>>> =
+        Rc::new(RefCell::new(Arc::new(AtomicBool::new(true))));
+
+    // ── Start ────────────────────────────────────────────────────────────────
+    let stop_flag_start = Rc::clone(&stop_flag);
+    let sweep_running_start = Rc::clone(&sweep_running);
+    let sites_spin_start = sites_spin.clone();
+    let rt_start = Rc::clone(&rt);
+    let tx_start = tx.clone();
+    let speed_scale_start = speed_scale.clone();
+    start_btn.connect_clicked(move |_| {
+        // Cancel any running sweep and issue a fresh cancellation token.
+        stop_flag_start.borrow().store(true, Ordering::Relaxed);
+        let flag = Arc::new(AtomicBool::new(false));
+        *stop_flag_start.borrow_mut() = Arc::clone(&flag);
+
+        sweep_running_start.set(true);
+        sites_spin_start.set_sensitive(false);
+
+        let tx = tx_start.clone();
+        // Speed 1 (Fast) → 5 ms/step, Speed 10 (Slow) → 50 ms/step.
+        let delay = tokio::time::Duration::from_millis(speed_scale_start.value() as u64 * 5);
+
+        rt_start.spawn(async move {
+            let mut y = 0.0_f64;
+            loop {
+                if flag.load(Ordering::Relaxed) || y > CANVAS_HEIGHT as f64 {
+                    break;
+                }
+                if tx.send(y).await.is_err() {
+                    break;
+                }
+                y += 1.0;
+                tokio::time::sleep(delay).await;
+            }
+            // Signal completion so the receiver can re-enable sites_spin.
+            tx.send(f64::NEG_INFINITY).await.ok();
+        });
+    });
+
+    // ── Stop ─────────────────────────────────────────────────────────────────
+    let stop_flag_stop = Rc::clone(&stop_flag);
+    let sweep_running_stop = Rc::clone(&sweep_running);
+    let sites_spin_stop = sites_spin.clone();
+    stop_btn.connect_clicked(move |_| {
+        stop_flag_stop.borrow().store(true, Ordering::Relaxed);
+        sweep_running_stop.set(false);
+        sites_spin_stop.set_sensitive(true);
+    });
+
+    // ── Reset ────────────────────────────────────────────────────────────────
+    let stop_flag_reset = Rc::clone(&stop_flag);
+    let sweep_running_reset = Rc::clone(&sweep_running);
+    let sites_spin_reset = sites_spin.clone();
+    let tx_reset = tx.clone();
+    reset_btn.connect_clicked(move |_| {
+        stop_flag_reset.borrow().store(true, Ordering::Relaxed);
+        sweep_running_reset.set(false);
+        sites_spin_reset.set_sensitive(true);
+        tx_reset.try_send(0.0).ok();
+    });
+
+    // ── Sites spin ───────────────────────────────────────────────────────────
+    // Disabled while sweeping; changing the count regenerates sites and
+    // auto-resets the directrix so the new diagram starts from scratch.
+    let voronoi_clone = Rc::clone(&voronoi_rc);
+    let canvas_sites = canvas.clone();
+    sites_spin.connect_value_changed(move |spin| {
+        let mut v = voronoi_clone.borrow_mut();
+        v.regenerate(spin.value() as usize);
+        canvas_sites.queue_draw();
+    });
 
     root.append(&canvas);
     window.set_child(Some(&root));
