@@ -1,9 +1,11 @@
 use std::cmp;
-
 use gtk4::cairo;
 
 
 pub const PARABOLA_X_STEP: usize = 5;
+
+type NodeIdx = usize;
+type SiteIdx = usize;
 
 #[derive(Debug, Copy, Clone)]
 pub struct Point {
@@ -15,13 +17,11 @@ pub struct Point {
 /// Voronoi site. The fields are :
 /// * x - X Position
 /// * y - Y Position
-/// * directrix - Directrix Y
 #[derive(Debug, Copy, Clone)]
 pub struct Site {
     pub x: f64,
     pub y: f64,
     pub color: (f64, f64, f64),
-    pub last_point: (Point, Point),
 }
 
 
@@ -82,6 +82,66 @@ impl Site {
         }
     }
 }
+
+
+
+
+/// Arc represents an arc in the beachline. It contains the index of the site
+/// that creates the arc, as well as an optional index of a circle event that
+/// may occur when the arc disappears from the beachline. The circle event is
+/// used to keep track of potential events that may occur during the algorithm,
+/// allowing for efficient updates to the beachline as the algorithm progresses.
+#[derive(Debug,  Clone)]
+struct Arc {
+    pub site: usize,
+    pub circle_event: Option<usize>,
+}
+
+
+/// InternalNode represents a breakpoint in the beachline. It contains the
+/// indices of the left and right sites that create the breakpoint, as well as
+/// the indices of the left and right child nodes in the beachline binary tree.
+/// The half_edge field is an optional index that points to the half-edge in the
+/// Voronoi diagram that corresponds to this breakpoint.
+/// 
+/// ## Fields:
+/// * left_site: usize - The index of the site that creates the left side of the breakpoint.
+/// * right_site: usize - The index of the site that creates the right side of the breakpoint.
+/// * left: NodeIdx - The index of the left child node in the beachline binary tree.
+/// * right: NodeIdx - The index of the right child node in the beachline binary tree.
+/// * half_edge: Option<usize> - An optional index that points to the half-edge
+/// in the Voronoi diagram that corresponds to this breakpoint. This is used to
+/// keep track of the edges in the Voronoi diagram as they are created and updated 
+/// during the algorithm.
+#[derive(Debug,  Clone)]
+struct InternalNode {
+    pub parent: Option<NodeIdx>,
+    pub left_site: SiteIdx,
+    pub right_site: SiteIdx,
+    pub left: NodeIdx,                  
+    pub right: NodeIdx,
+    pub half_edge: Option<usize>,
+}
+
+#[derive(Debug,  Clone)]
+enum BeachNode {
+    Arc(Arc),
+    BreakPoint(InternalNode),
+}
+
+#[derive(Debug,  Clone)]
+struct BeachLine {
+    nodes: Vec<Option<BeachNode>>,
+    root: Option<usize>,
+}
+
+impl BeachLine {
+    pub fn new() -> Self {
+        BeachLine { nodes: Vec::new(), root: None }
+    }
+}
+
+
     
 
 #[derive(Debug, Clone)]
@@ -91,11 +151,13 @@ pub struct Voronoi {
     pub directrix: f64,
     pub sites: Vec<Site>,
     pub active_sites: Vec<Site>,
+
+    pub beachline: BeachLine,
 }
 
 impl Voronoi {
     pub fn new(width: i32, height: i32) -> Self {
-        Voronoi { width, height, directrix: 0.0, sites: Vec::new(), active_sites: Vec::new() }
+        Voronoi { width, height, directrix: 0.0, sites: Vec::new(), active_sites: Vec::new(), beachline: BeachLine::new() }
     }
 
     pub fn new_random(num_sites: usize, width: i32, height: i32) -> Self {
@@ -104,10 +166,65 @@ impl Voronoi {
             let x = rand::random::<f64>() * width as f64;
             let y = rand::random::<f64>() * height as f64;
             let color = (rand::random::<f64>(), rand::random::<f64>(), rand::random::<f64>());
-            let last_point = (Point { x, y }, Point { x, y });
-            sites.push(Site { x, y, color, last_point        });
+            sites.push(Site { x, y, color });
         }
-        Voronoi { width, height, directrix: 0.0, sites, active_sites: Vec::new() }
+        Voronoi { width, height, directrix: 0.0, sites, active_sites: Vec::new(), beachline: BeachLine::new() }
+    }
+
+
+    /// Calculates the x coordinate of the breakpoint between two sites on the beachline
+    /// given the current position of the directrix. This is done by solving the 
+    /// quadratic equation that arises from the definition of the parabolas that form the
+    /// beachline. The function takes into account the special case where both sites have 
+    /// the same y coordinate, which would cause a division by zero in the quadratic formula.
+    fn breakpoint_x(&self, left_site: &Site, right_site: &Site) -> f64 {
+        // guard against both site having the same y coordinate, which would cause a 
+        // division by zero in the quadratic formula
+        if (left_site.y - right_site.y).abs() < 1e-10 {
+           return (left_site.x + right_site.x) / 2.0;
+        }
+        // calculate the coefficients of the quadratic equation for the breakpoint
+        let p = 1.0 / (2.0 * (left_site.y - self.directrix));
+        let q = 1.0 / (2.0 * (right_site.y - self.directrix));
+
+        let a = p-q;
+        let b = -2.0 * (left_site.x * p - right_site.x * q);
+        let c = p * left_site.x.powi(2) - q * right_site.x.powi(2) + (left_site.y - right_site.y) / 2.0;
+
+        let disc = b * b - 4.0 * a * c;
+        let sqrt_disc = disc.max(0.0).sqrt();
+        let x1 = (-b + sqrt_disc) / (2.0 * a);
+        let x2 = (-b - sqrt_disc) / (2.0 * a);
+        if left_site.y < right_site.y {
+            x1.min(x2)
+        } else {
+            x1.max(x2)
+        }
+    }
+
+    pub fn find_arc_above(&self, x: f64) -> Option<NodeIdx> {
+        let mut node_idx = self.beachline.root?;
+        loop {
+            match &self.beachline.nodes[node_idx] {
+                Some(BeachNode::Arc(arc)) => {
+                    return Some(node_idx);  
+                },
+                Some(BeachNode::BreakPoint(bp)) => {
+                    let left_site = &self.sites[bp.left_site];
+                    let right_site = &self.sites[bp.right_site];
+                    let breakpoint_x = self.breakpoint_x(left_site, right_site);
+                    if x < breakpoint_x {
+                        node_idx = bp.left;
+                    } else {
+                        node_idx = bp.right;    
+
+                    }
+                }
+                None => {
+                    return None; // This should not happen if the beachline is properly maintained
+                }
+            }
+        }        
     }
 
     pub fn draw(&self, width: i32, height: i32, ctx: &cairo::Context) {
