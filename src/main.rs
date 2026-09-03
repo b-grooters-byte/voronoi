@@ -12,9 +12,11 @@ pub use voronoi::*;
 
 const WINDOW_INIT_WIDTH: i32 = 900;
 const WINDOW_INIT_HEIGHT: i32 = 500;
-const CANVAS_WIDTH: i32 = 700;
-const CANVAS_HEIGHT: i32 = 500;
-const DEFAULT_SITES: f64 = 15.0;
+const CANVAS_WIDTH: i32 = 800;
+const CANVAS_HEIGHT: i32 = 600;
+const DEFAULT_SITES: f64 = 25.0;
+const MAX_SITES: f64 = 250.0;
+const MIN_SITES: f64 = 5.0;
 
 fn main() {
     let app = Application::new(Some("org.bytetrail.dtx"), Default::default());
@@ -32,7 +34,6 @@ fn build_ui(app: &Application) {
 
     let root = gtk4::Box::new(Orientation::Horizontal, 0);
 
-    // ── Control panel ────────────────────────────────────────────────────────
     let controls = gtk4::Box::new(Orientation::Vertical, 8);
     controls.set_margin_top(16);
     controls.set_margin_bottom(16);
@@ -42,7 +43,7 @@ fn build_ui(app: &Application) {
 
     let sites_label = gtk4::Label::new(Some("Sites"));
     sites_label.set_halign(gtk4::Align::Start);
-    let sites_spin = gtk4::SpinButton::with_range(5.0, 50.0, 1.0);
+    let sites_spin = gtk4::SpinButton::with_range(MIN_SITES, MAX_SITES, 1.0);
     sites_spin.set_value(DEFAULT_SITES);
     sites_spin.set_hexpand(true);
 
@@ -79,7 +80,6 @@ fn build_ui(app: &Application) {
     root.append(&controls);
     root.append(&gtk4::Separator::new(Orientation::Vertical));
 
-    // ── Drawing canvas ───────────────────────────────────────────────────────
     let canvas = DrawingArea::new();
     canvas.set_content_width(CANVAS_WIDTH);
     canvas.set_content_height(CANVAS_HEIGHT);
@@ -94,7 +94,6 @@ fn build_ui(app: &Application) {
         v.draw(width, height, ctx);
     });
 
-    // ── Directrix channel: Tokio task → GLib main loop ───────────────────────
     // tokio::sync::mpsc::Sender is Send so it moves into the Tokio task.
     // glib::spawn_future_local runs the receiver loop on the GTK main thread,
     // so it can safely capture Rc<RefCell<Voronoi>> and the canvas.
@@ -119,10 +118,16 @@ fn build_ui(app: &Application) {
                 if sweep_running_rx.get() {
                     sweep_running_rx.set(false);
                     sites_spin_rx.set_sensitive(true);
+                    // The animated sweep only covers y in [0, height], so
+                    // edges on the outer hull are still short of their true
+                    // endpoint; push the sweep the rest of the way (off
+                    // canvas, unanimated) to finish them off.
+                    voronoi_clone.borrow_mut().finish_tessellation();
+                    canvas_rx.queue_draw();
                 }
             } else {
                 let mut v = voronoi_clone.borrow_mut();
-                v.directrix = y;
+                v.advance_to(y);
                 canvas_rx.queue_draw();
             }
         }
@@ -163,6 +168,7 @@ fn build_ui(app: &Application) {
         let flag = Arc::new(AtomicBool::new(false));
         *stop_flag_start.borrow_mut() = Arc::clone(&flag);
         let height = voronoi_start.borrow().height as f64;
+        voronoi_start.borrow_mut().start_sweep();
         sweep_running_start.set(true);
         sites_spin_start.set_sensitive(false);
 
@@ -187,7 +193,8 @@ fn build_ui(app: &Application) {
         });
     });
 
-    // ── Stop ─────────────────────────────────────────────────────────────────
+    //-----------------------------------------------------------------------------------
+    // handle stop
     let stop_flag_stop = Rc::clone(&stop_flag);
     let sweep_running_stop = Rc::clone(&sweep_running);
     let sites_spin_stop = sites_spin.clone();
@@ -197,19 +204,25 @@ fn build_ui(app: &Application) {
         sites_spin_stop.set_sensitive(true);
     });
 
-    // ── Reset ────────────────────────────────────────────────────────────────
+    //-----------------------------------------------------------------------------------
+    // handle reset
     let stop_flag_reset = Rc::clone(&stop_flag);
     let sweep_running_reset = Rc::clone(&sweep_running);
     let sites_spin_reset = sites_spin.clone();
     let tx_reset = tx.clone();
+    let voronoi_reset = Rc::clone(&voronoi_rc);
     reset_btn.connect_clicked(move |_| {
         stop_flag_reset.borrow().store(true, Ordering::Relaxed);
         sweep_running_reset.set(false);
         sites_spin_reset.set_sensitive(true);
+        // Rebuilding (rather than just clearing) the beachline puts it back
+        // into the same "ready to run" state Start expects.
+        voronoi_reset.borrow_mut().start_sweep();
         tx_reset.try_send(0.0).ok();
     });
 
-    // ── Sites spin ───────────────────────────────────────────────────────────
+    //-----------------------------------------------------------------------------------
+    // handle sites spin control
     // Disabled while sweeping; changing the count regenerates sites and
     // auto-resets the directrix so the new diagram starts from scratch.
     let voronoi_clone = Rc::clone(&voronoi_rc);
