@@ -1,6 +1,5 @@
-use std::cmp;
 use gtk4::cairo;
-
+use std::cmp;
 
 pub const PARABOLA_X_STEP: usize = 5;
 
@@ -23,7 +22,6 @@ pub struct Site {
     pub y: f64,
     pub color: (f64, f64, f64),
 }
-
 
 impl Site {
     /// Renders the current directrix based representation of a site.
@@ -56,7 +54,8 @@ impl Site {
         let start_x = cmp::max(clip.0 as i32 - PARABOLA_X_STEP as i32, 0) as usize;
         let end_x = clip.2 as usize + PARABOLA_X_STEP;
         for x in (start_x..=end_x).step_by(PARABOLA_X_STEP) {
-            let y = 1.0 / (2.0 * (self.y - directrix)) * ((x as f64 - self.x) * (x as f64 - self.x))
+            let y = 1.0 / (2.0 * (self.y - directrix))
+                * ((x as f64 - self.x) * (x as f64 - self.x))
                 + ((self.y + directrix) / 2.0);
             if rendering {
                 ctx.line_to(x as f64, y);
@@ -83,27 +82,23 @@ impl Site {
     }
 }
 
-
-
-
 /// Arc represents an arc in the beachline. It contains the index of the site
 /// that creates the arc, as well as an optional index of a circle event that
 /// may occur when the arc disappears from the beachline. The circle event is
 /// used to keep track of potential events that may occur during the algorithm,
 /// allowing for efficient updates to the beachline as the algorithm progresses.
-#[derive(Debug,  Clone)]
+#[derive(Debug, Clone)]
 struct Arc {
     pub site: usize,
     pub circle_event: Option<usize>,
 }
-
 
 /// InternalNode represents a breakpoint in the beachline. It contains the
 /// indices of the left and right sites that create the breakpoint, as well as
 /// the indices of the left and right child nodes in the beachline binary tree.
 /// The half_edge field is an optional index that points to the half-edge in the
 /// Voronoi diagram that corresponds to this breakpoint.
-/// 
+///
 /// ## Fields:
 /// * left_site: usize - The index of the site that creates the left side of the breakpoint.
 /// * right_site: usize - The index of the site that creates the right side of the breakpoint.
@@ -111,25 +106,25 @@ struct Arc {
 /// * right: NodeIdx - The index of the right child node in the beachline binary tree.
 /// * half_edge: Option<usize> - An optional index that points to the half-edge
 /// in the Voronoi diagram that corresponds to this breakpoint. This is used to
-/// keep track of the edges in the Voronoi diagram as they are created and updated 
+/// keep track of the edges in the Voronoi diagram as they are created and updated
 /// during the algorithm.
-#[derive(Debug,  Clone)]
+#[derive(Debug, Clone)]
 struct InternalNode {
     pub parent: Option<NodeIdx>,
     pub left_site: SiteIdx,
     pub right_site: SiteIdx,
-    pub left: NodeIdx,                  
+    pub left: NodeIdx,
     pub right: NodeIdx,
     pub half_edge: Option<usize>,
 }
 
-#[derive(Debug,  Clone)]
+#[derive(Debug, Clone)]
 enum BeachNode {
     Arc(Arc),
     BreakPoint(InternalNode),
 }
 
-#[derive(Debug,  Clone)]
+#[derive(Debug, Clone)]
 struct BeachLine {
     nodes: Vec<Option<BeachNode>>,
     root: Option<usize>,
@@ -137,12 +132,12 @@ struct BeachLine {
 
 impl BeachLine {
     pub fn new() -> Self {
-        BeachLine { nodes: Vec::new(), root: None }
+        BeachLine {
+            nodes: Vec::new(),
+            root: None,
+        }
     }
 }
-
-
-    
 
 #[derive(Debug, Clone)]
 pub struct Voronoi {
@@ -157,7 +152,14 @@ pub struct Voronoi {
 
 impl Voronoi {
     pub fn new(width: i32, height: i32) -> Self {
-        Voronoi { width, height, directrix: 0.0, sites: Vec::new(), active_sites: Vec::new(), beachline: BeachLine::new() }
+        Voronoi {
+            width,
+            height,
+            directrix: 0.0,
+            sites: Vec::new(),
+            active_sites: Vec::new(),
+            beachline: BeachLine::new(),
+        }
     }
 
     pub fn new_random(num_sites: usize, width: i32, height: i32) -> Self {
@@ -165,10 +167,21 @@ impl Voronoi {
         for _ in 0..num_sites {
             let x = rand::random::<f64>() * width as f64;
             let y = rand::random::<f64>() * height as f64;
-            let color = (rand::random::<f64>(), rand::random::<f64>(), rand::random::<f64>());
+            let color = (
+                rand::random::<f64>(),
+                rand::random::<f64>(),
+                rand::random::<f64>(),
+            );
             sites.push(Site { x, y, color });
         }
-        Voronoi { width, height, directrix: 0.0, sites, active_sites: Vec::new(), beachline: BeachLine::new() }
+        Voronoi {
+            width,
+            height,
+            directrix: 0.0,
+            sites,
+            active_sites: Vec::new(),
+            beachline: BeachLine::new(),
+        }
     }
 
     /// Replaces all sites with a fresh random set and resets the sweep state.
@@ -179,30 +192,42 @@ impl Voronoi {
         for _ in 0..count {
             let x = rand::random::<f64>() * self.width as f64;
             let y = rand::random::<f64>() * self.height as f64;
-            let color = (rand::random::<f64>(), rand::random::<f64>(), rand::random::<f64>());
+            let color = (
+                rand::random::<f64>(),
+                rand::random::<f64>(),
+                rand::random::<f64>(),
+            );
             self.sites.push(Site { x, y, color });
         }
     }
 
+    /// Adopts a new panel size, resetting the sweep and recalculating the
+    /// random sites so they stay within the new bounds.
+    pub fn resize(&mut self, width: i32, height: i32) {
+        self.width = width;
+        self.height = height;
+        self.regenerate(self.sites.len());
+    }
 
     /// Calculates the x coordinate of the breakpoint between two sites on the beachline
-    /// given the current position of the directrix. This is done by solving the 
+    /// given the current position of the directrix. This is done by solving the
     /// quadratic equation that arises from the definition of the parabolas that form the
-    /// beachline. The function takes into account the special case where both sites have 
+    /// beachline. The function takes into account the special case where both sites have
     /// the same y coordinate, which would cause a division by zero in the quadratic formula.
     fn breakpoint_x(&self, left_site: &Site, right_site: &Site) -> f64 {
-        // guard against both site having the same y coordinate, which would cause a 
+        // guard against both site having the same y coordinate, which would cause a
         // division by zero in the quadratic formula
         if (left_site.y - right_site.y).abs() < 1e-10 {
-           return (left_site.x + right_site.x) / 2.0;
+            return (left_site.x + right_site.x) / 2.0;
         }
         // calculate the coefficients of the quadratic equation for the breakpoint
         let p = 1.0 / (2.0 * (left_site.y - self.directrix));
         let q = 1.0 / (2.0 * (right_site.y - self.directrix));
 
-        let a = p-q;
+        let a = p - q;
         let b = -2.0 * (left_site.x * p - right_site.x * q);
-        let c = p * left_site.x.powi(2) - q * right_site.x.powi(2) + (left_site.y - right_site.y) / 2.0;
+        let c =
+            p * left_site.x.powi(2) - q * right_site.x.powi(2) + (left_site.y - right_site.y) / 2.0;
 
         let disc = b * b - 4.0 * a * c;
         let sqrt_disc = disc.max(0.0).sqrt();
@@ -220,8 +245,8 @@ impl Voronoi {
         loop {
             match &self.beachline.nodes[node_idx] {
                 Some(BeachNode::Arc(arc)) => {
-                    return Some(node_idx);  
-                },
+                    return Some(node_idx);
+                }
                 Some(BeachNode::BreakPoint(bp)) => {
                     let left_site = &self.sites[bp.left_site];
                     let right_site = &self.sites[bp.right_site];
@@ -229,20 +254,19 @@ impl Voronoi {
                     if x < breakpoint_x {
                         node_idx = bp.left;
                     } else {
-                        node_idx = bp.right;    
-
+                        node_idx = bp.right;
                     }
                 }
                 None => {
                     return None; // This should not happen if the beachline is properly maintained
                 }
             }
-        }        
+        }
     }
 
     pub fn draw(&self, width: i32, height: i32, ctx: &cairo::Context) {
         for site in &self.sites {
-            site.draw(self.directrix,width, height, ctx);
+            site.draw(self.directrix, width, height, ctx);
         }
         // render the text
         ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
@@ -270,13 +294,12 @@ impl Voronoi {
         let mut x = 0.0;
         let mut prev_site = Some(0);
         let mut site_idx: usize = 0;
-        let active_sites: Vec<&Site> = self.sites.iter().filter(|s| 
-            s.y < self.directrix).collect();
+        let active_sites: Vec<&Site> = self.sites.iter().filter(|s| s.y < self.directrix).collect();
         if active_sites.is_empty() {
             return;
         }
         ctx.set_line_width(0.5);
-    
+
         while x < self.width as f64 {
             let mut max_y = std::f64::NEG_INFINITY;
             for (idx, site) in active_sites.iter().enumerate() {
@@ -299,11 +322,10 @@ impl Voronoi {
                 ctx.set_source_rgba(site_color.0, site_color.1, site_color.2, 1.0);
                 //ctx.new_path();
                 ctx.arc(x, max_y, 0.5, 0.0, 2.0 * std::f64::consts::PI);
-            } 
-        } 
-        if let  Err(_e) = ctx.stroke() {
+            }
+        }
+        if let Err(_e) = ctx.stroke() {
             println!("Error stroking beachline: {:?}", _e);
-        }   
-
+        }
     }
 }

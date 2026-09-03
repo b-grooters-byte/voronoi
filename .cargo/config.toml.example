@@ -1,0 +1,15 @@
+# Windows GTK Build Configuration
+# Copy this file to .cargo/config.toml and adjust paths to your GTK installation.
+# Also copy run-with-gtk.cmd.example to run-with-gtk.cmd and adjust the path.
+# Linux and macOS users do not need these files.
+#
+# Prerequisites:
+#   1. Install GTK4 (e.g. via gvsbuild or vcpkg)
+#   2. Adjust the paths below to match your GTK installation
+
+[env]
+PKG_CONFIG_PATH = "c:/dev/gtk/lib/pkgconfig"
+PKG_CONFIG = "c:/dev/gtk/bin/pkg-config.exe"
+
+[target.x86_64-pc-windows-msvc]
+runner = ".cargo/run-with-gtk.cmd"

@@ -3,8 +3,8 @@ use gtk4::{Application, ApplicationWindow, DrawingArea, Orientation};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 pub mod voronoi;
@@ -98,8 +98,10 @@ fn build_ui(app: &Application) {
     // tokio::sync::mpsc::Sender is Send so it moves into the Tokio task.
     // glib::spawn_future_local runs the receiver loop on the GTK main thread,
     // so it can safely capture Rc<RefCell<Voronoi>> and the canvas.
-    let (tx, mut rx): (tokio::sync::mpsc::Sender<f64>, tokio::sync::mpsc::Receiver<f64>) =
-        tokio::sync::mpsc::channel(64);
+    let (tx, mut rx): (
+        tokio::sync::mpsc::Sender<f64>,
+        tokio::sync::mpsc::Receiver<f64>,
+    ) = tokio::sync::mpsc::channel(64);
 
     // sweep_running: true while a Tokio sweep task is active.
     // Used to gate sites_spin sensitivity and ignore stale Done signals.
@@ -126,29 +128,41 @@ fn build_ui(app: &Application) {
         }
     });
 
-    // ── Shared Tokio runtime ─────────────────────────────────────────────────
-    let rt = Rc::new(
-        tokio::runtime::Runtime::new().expect("failed to create tokio runtime"),
-    );
+    let rt = Rc::new(tokio::runtime::Runtime::new().expect("failed to create tokio runtime"));
 
-    // stop_flag is replaced on each Start so each task has its own independent
-    // cancellation token.
     let stop_flag: Rc<RefCell<Arc<AtomicBool>>> =
         Rc::new(RefCell::new(Arc::new(AtomicBool::new(true))));
 
-    // ── Start ────────────────────────────────────────────────────────────────
+    let stop_flag_resize = Rc::clone(&stop_flag);
+    let sweep_running_resize = Rc::clone(&sweep_running);
+    let sites_spin_resize = sites_spin.clone();
+    let voronoi_resize = Rc::clone(&voronoi_rc);
+    let tx_resize = tx.clone();
+    canvas.connect_resize(move |area, width, height| {
+        stop_flag_resize.borrow().store(true, Ordering::Relaxed);
+        sweep_running_resize.set(false);
+        sites_spin_resize.set_sensitive(true);
+
+        voronoi_resize.borrow_mut().resize(width, height);
+        area.queue_draw();
+        // Flush the directrix through the channel so any sweep values still
+        // in flight from before the cancellation don't clobber the reset.
+        tx_resize.try_send(0.0).ok();
+    });
+
     let stop_flag_start = Rc::clone(&stop_flag);
     let sweep_running_start = Rc::clone(&sweep_running);
     let sites_spin_start = sites_spin.clone();
     let rt_start = Rc::clone(&rt);
     let tx_start = tx.clone();
     let speed_scale_start = speed_scale.clone();
+    let voronoi_start = Rc::clone(&voronoi_rc);
     start_btn.connect_clicked(move |_| {
         // Cancel any running sweep and issue a fresh cancellation token.
         stop_flag_start.borrow().store(true, Ordering::Relaxed);
         let flag = Arc::new(AtomicBool::new(false));
         *stop_flag_start.borrow_mut() = Arc::clone(&flag);
-
+        let height = voronoi_start.borrow().height as f64;
         sweep_running_start.set(true);
         sites_spin_start.set_sensitive(false);
 
@@ -159,7 +173,7 @@ fn build_ui(app: &Application) {
         rt_start.spawn(async move {
             let mut y = 0.0_f64;
             loop {
-                if flag.load(Ordering::Relaxed) || y > CANVAS_HEIGHT as f64 {
+                if flag.load(Ordering::Relaxed) || y > height as f64 {
                     break;
                 }
                 if tx.send(y).await.is_err() {

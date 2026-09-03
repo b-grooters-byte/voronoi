@@ -13,3 +13,7 @@ Cargo.lock
 # Added by cargo
 
 /target
+
+# Machine-specific Windows GTK build configuration
+.cargo/config.toml
+.cargo/run-with-gtk.cmd

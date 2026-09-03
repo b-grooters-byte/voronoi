@@ -1,0 +1,4 @@
+@echo off
+rem Adjust the path below to your GTK bin directory
+set PATH=c:\dev\gtk\bin;%PATH%
+%*
