@@ -248,6 +248,74 @@ pub struct Voronoi {
     finished: bool,
 }
 
+/// Sutherland-Hodgman: clips convex polygon `poly` against the line
+/// through `p0`/`p1`, keeping only the half-plane that `reference` (the
+/// cell's own site) is on. Used to build a Voronoi cell by starting from
+/// the canvas rectangle and clipping it down by each bordering edge in
+/// turn — unlike connecting edge endpoints directly, this naturally
+/// produces a canvas corner vertex whenever the cell's true boundary
+/// wraps around one.
+fn clip_by_line(poly: &[Point], p0: Point, p1: Point, reference: Point) -> Vec<Point> {
+    if poly.is_empty() {
+        return Vec::new();
+    }
+    // Signed perpendicular *distance* from the p0-p1 line (normalized by
+    // line length, unlike a raw cross product, so the epsilon below means
+    // the same thing regardless of how far apart p0/p1 happen to be).
+    // Two sites' bisector is typically clipped twice — once per each of
+    // the two opposite-growing edge pieces a site split creates — and
+    // those are the *same* line built from different point pairs, so
+    // numerically imperfect; without this tolerance, an already-correct
+    // vertex sitting essentially exactly on that line can flip to the
+    // "wrong" side from floating-point noise alone and spuriously survive
+    // clipping as an extra near-duplicate vertex.
+    let line_len = ((p1.x - p0.x).powi(2) + (p1.y - p0.y).powi(2)).sqrt();
+    let side = |q: Point| {
+        let raw = (p1.x - p0.x) * (q.y - p0.y) - (p1.y - p0.y) * (q.x - p0.x);
+        if line_len > 0.0 { raw / line_len } else { raw }
+    };
+    const EPS: f64 = 1e-6;
+    let keep_positive = side(reference) >= 0.0;
+    let inside = |q: Point| {
+        let s = side(q);
+        if keep_positive { s >= -EPS } else { s <= EPS }
+    };
+
+    let mut out = Vec::with_capacity(poly.len() + 1);
+    for i in 0..poly.len() {
+        let curr = poly[i];
+        let prev = poly[(i + poly.len() - 1) % poly.len()];
+        let curr_in = inside(curr);
+        let prev_in = inside(prev);
+        if curr_in != prev_in {
+            let s_prev = side(prev);
+            let s_curr = side(curr);
+            let t = s_prev / (s_prev - s_curr);
+            out.push(Point {
+                x: prev.x + t * (curr.x - prev.x),
+                y: prev.y + t * (curr.y - prev.y),
+            });
+        }
+        if curr_in {
+            out.push(curr);
+        }
+    }
+    out
+}
+
+/// Removes consecutive (including wraparound) near-duplicate points from
+/// a cyclic polygon vertex list, in place.
+fn dedup_close_points(poly: &mut Vec<Point>) {
+    poly.dedup_by(|a, b| (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6);
+    if poly.len() > 1 {
+        let first = poly[0];
+        let last = *poly.last().expect("checked non-empty above");
+        if (first.x - last.x).abs() < 1e-6 && (first.y - last.y).abs() < 1e-6 {
+            poly.pop();
+        }
+    }
+}
+
 impl Voronoi {
     pub fn new(width: i32, height: i32) -> Self {
         Voronoi {
@@ -361,6 +429,48 @@ impl Voronoi {
         self.directrix = y;
     }
 
+    /// Every cell edge's current shape, as `(left_site, right_site, start,
+    /// end, done)`. For a finished edge, `end` is its fixed vertex. For a
+    /// still-growing one, `end` is its owning breakpoint's *live* current
+    /// position (via the same `breakpoint_x`/`parabola_y` walk used
+    /// elsewhere); such a point is dropped entirely if the walk hits the
+    /// degenerate "just inserted" case (directrix exactly at a site's y).
+    /// Shared by rendering, the "is anything still visible" check, and
+    /// cell-polygon assembly, so all three agree on what an edge's
+    /// current shape is.
+    fn all_edge_segments(&self) -> Vec<(SiteIdx, SiteIdx, Point, Point, bool)> {
+        let mut result = Vec::with_capacity(self.edges.len());
+        for edge in &self.edges {
+            if edge.done {
+                result.push((edge.left_site, edge.right_site, edge.start, edge.end, true));
+            }
+        }
+        if let Some(root) = self.beachline.root {
+            let mut breakpoints = Vec::new();
+            self.collect_breakpoints_inorder(root, &mut breakpoints);
+            for bp_idx in breakpoints {
+                let (half_edge, left_site, right_site) = match self.beachline.get(bp_idx) {
+                    BeachNode::BreakPoint(bp) => (bp.half_edge, bp.left_site, bp.right_site),
+                    BeachNode::Arc(_) => {
+                        unreachable!("collect_breakpoints_inorder only visits breakpoints")
+                    }
+                };
+                let Some(edge_idx) = half_edge else { continue };
+                let edge = &self.edges[edge_idx];
+                if edge.done {
+                    continue;
+                }
+                let x = self.breakpoint_x(&self.sites[left_site], &self.sites[right_site]);
+                let y = self.parabola_y(&self.sites[left_site], x);
+                if x.is_nan() || y.is_nan() {
+                    continue; // same degenerate (directrix == site.y) case beachline() guards against
+                }
+                result.push((left_site, right_site, edge.start, Point { x, y }, false));
+            }
+        }
+        result
+    }
+
     /// True if any still-growing edge's current tip lies within the
     /// visible canvas rectangle. `finish_tessellation` advances the sweep
     /// until this is false for every open edge — checking the full
@@ -369,35 +479,79 @@ impl Voronoi {
     /// changes as the sweep advances, only x does, so it only ever exits
     /// through a side, never the bottom.
     fn open_edge_visible(&self) -> bool {
-        let Some(root) = self.beachline.root else {
-            return false;
-        };
-        let mut breakpoints = Vec::new();
-        self.collect_breakpoints_inorder(root, &mut breakpoints);
-        for bp_idx in breakpoints {
-            let (half_edge, left_site, right_site) = match self.beachline.get(bp_idx) {
-                BeachNode::BreakPoint(bp) => (bp.half_edge, bp.left_site, bp.right_site),
-                BeachNode::Arc(_) => {
-                    unreachable!("collect_breakpoints_inorder only visits breakpoints")
-                }
-            };
-            let Some(edge_idx) = half_edge else { continue };
-            if self.edges[edge_idx].done {
-                continue;
-            }
-            let x = self.breakpoint_x(&self.sites[left_site], &self.sites[right_site]);
-            let y = self.parabola_y(&self.sites[left_site], x);
-            if x.is_finite()
-                && y.is_finite()
-                && x >= 0.0
-                && x <= self.width as f64
-                && y >= 0.0
-                && y <= self.height as f64
-            {
-                return true;
-            }
+        self.all_edge_segments().into_iter().any(|(_, _, _, tip, done)| {
+            !done
+                && tip.x.is_finite()
+                && tip.y.is_finite()
+                && tip.x >= 0.0
+                && tip.x <= self.width as f64
+                && tip.y >= 0.0
+                && tip.y <= self.height as f64
+        })
+    }
+
+    /// True once the tessellation is complete (see `finish_tessellation`)
+    /// — only then do cell shapes, and so `cell_polygons`, mean anything.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// Every Voronoi cell as a closed, convex polygon clipped to the
+    /// canvas — `(site index, polygon vertices)` for every site with a
+    /// well-formed (>=3 vertex) cell. Requires a finished tessellation
+    /// (returns an empty list otherwise; cell shapes aren't meaningful
+    /// mid-sweep).
+    ///
+    /// Built the standard way for a bounded Voronoi cell: start from the
+    /// canvas rectangle and, for every edge bordering the site, clip the
+    /// polygon down to the half-plane on the site's own side of that
+    /// edge's line (`clip_by_line`, Sutherland-Hodgman against an
+    /// arbitrary line rather than just an axis-aligned one). Starting
+    /// from the full rectangle — rather than connecting edge endpoints
+    /// directly — is what correctly inserts canvas corner vertices for
+    /// hull cells whose true boundary follows the canvas edge through
+    /// one or more corners.
+    pub fn cell_polygons(&self) -> Vec<(usize, Vec<Point>)> {
+        if !self.finished {
+            return Vec::new();
         }
-        false
+        let mut per_site_edges: Vec<Vec<(Point, Point)>> = vec![Vec::new(); self.sites.len()];
+        for (left_site, right_site, start, end, _done) in self.all_edge_segments() {
+            per_site_edges[left_site].push((start, end));
+            per_site_edges[right_site].push((start, end));
+        }
+
+        let w = self.width as f64;
+        let h = self.height as f64;
+        let canvas = vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: w, y: 0.0 },
+            Point { x: w, y: h },
+            Point { x: 0.0, y: h },
+        ];
+
+        per_site_edges
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, edges)| {
+                let site = self.sites[idx];
+                let mut poly = canvas.clone();
+                for (p0, p1) in edges {
+                    poly = clip_by_line(&poly, p0, p1, Point { x: site.x, y: site.y });
+                    if poly.len() < 3 {
+                        return None;
+                    }
+                }
+                // Two edges bordering the same site pair can be
+                // mathematically the same bisector line but numerically
+                // slightly different (they're built from different point
+                // pairs — e.g. an unbounded cell's two opposite-growing
+                // edge pieces). Clipping by both then leaves a
+                // near-duplicate vertex right next to the real corner.
+                dedup_close_points(&mut poly);
+                if poly.len() < 3 { None } else { Some((idx, poly)) }
+            })
+            .collect()
     }
 
     /// Called once the animated sweep reaches the bottom of the canvas.
@@ -952,38 +1106,13 @@ impl Voronoi {
         ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
         ctx.set_line_width(1.0);
         ctx.new_path();
-        for edge in &self.edges {
-            if edge.done {
-                // A near-collinear triple can produce a circumcenter far
-                // enough away to overflow Cairo's usable coordinate range
-                // even though it's a perfectly finite f64.
-                ctx.move_to(clamp_coord(edge.start.x), clamp_coord(edge.start.y));
-                ctx.line_to(clamp_coord(edge.end.x), clamp_coord(edge.end.y));
-            }
-        }
-        if let Some(root) = self.beachline.root {
-            let mut breakpoints = Vec::new();
-            self.collect_breakpoints_inorder(root, &mut breakpoints);
-            for bp_idx in breakpoints {
-                let (half_edge, left_site, right_site) = match self.beachline.get(bp_idx) {
-                    BeachNode::BreakPoint(bp) => (bp.half_edge, bp.left_site, bp.right_site),
-                    BeachNode::Arc(_) => {
-                        unreachable!("collect_breakpoints_inorder only visits breakpoints")
-                    }
-                };
-                let Some(edge_idx) = half_edge else { continue };
-                let edge = &self.edges[edge_idx];
-                if edge.done {
-                    continue;
-                }
-                let x = self.breakpoint_x(&self.sites[left_site], &self.sites[right_site]);
-                let y = self.parabola_y(&self.sites[left_site], x);
-                if x.is_nan() || y.is_nan() {
-                    continue; // same degenerate (directrix == site.y) case beachline() guards against
-                }
-                ctx.move_to(clamp_coord(edge.start.x), clamp_coord(edge.start.y));
-                ctx.line_to(clamp_coord(x), clamp_coord(y));
-            }
+        // A near-collinear triple (or a near-singular breakpoint) can
+        // produce a coordinate far enough away to overflow Cairo's usable
+        // range even though it's a perfectly finite f64 — clamp everything
+        // handed to Cairo.
+        for (_, _, start, end, _done) in self.all_edge_segments() {
+            ctx.move_to(clamp_coord(start.x), clamp_coord(start.y));
+            ctx.line_to(clamp_coord(end.x), clamp_coord(end.y));
         }
         if let Err(_e) = ctx.stroke() {
             println!("Error stroking cell edges: {:?}", _e);
@@ -1172,4 +1301,105 @@ mod tests {
         assert!(!v.open_edge_visible());
         assert!(v.finished);
     }
+
+    #[test]
+    fn clip_by_line_cases() {
+        // A square, clipped to the half (x <= 5) containing (0,0):
+        // becomes a smaller rectangle with a new edge at x = 5.
+        let square = vec![
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 10.0, y: 0.0 },
+            Point { x: 10.0, y: 10.0 },
+            Point { x: 0.0, y: 10.0 },
+        ];
+        let clipped = clip_by_line(
+            &square,
+            Point { x: 5.0, y: 0.0 },
+            Point { x: 5.0, y: 10.0 },
+            Point { x: 0.0, y: 0.0 },
+        );
+        for p in &clipped {
+            assert!(p.x <= 5.0 + 1e-9, "point {:?} not clipped to x<=5", p);
+        }
+        assert!(clipped.iter().any(|p| (p.x - 5.0).abs() < 1e-9));
+
+        // A line entirely missing the polygon on the kept side clips it
+        // away to nothing.
+        let clipped = clip_by_line(
+            &square,
+            Point { x: 20.0, y: 0.0 },
+            Point { x: 20.0, y: 10.0 },
+            Point { x: 30.0, y: 0.0 }, // reference is on the far side of the square
+        );
+        assert!(clipped.is_empty());
+    }
+
+    /// Two sites with distinct y (so no tied-y site events — see the
+    /// "general position" note elsewhere) split a 100x100 canvas along
+    /// their perpendicular bisector. That line is elementary to derive by
+    /// hand: sites at (30,20) and (70,80) have midpoint (50,50) and AB
+    /// slope 1.5, so the bisector (slope -2/3) crosses the canvas at
+    /// x=0,y=250/3 and x=100,y=50/3 — giving two hand-checkable
+    /// quadrilateral cells, regardless of how the algorithm internally
+    /// builds the bisector out of two opposite-growing edge pieces.
+    #[test]
+    fn cell_polygons_matches_hand_derived_bisector_clip() {
+        let mut v = Voronoi::new(100, 100);
+        v.sites.push(Site {
+            x: 30.0,
+            y: 20.0,
+            color: (0.0, 0.0, 0.0),
+        }); // 0
+        v.sites.push(Site {
+            x: 70.0,
+            y: 80.0,
+            color: (0.0, 0.0, 0.0),
+        }); // 1
+        v.start_sweep();
+        v.advance_to(100.0);
+        v.finish_tessellation();
+
+        let polys = v.cell_polygons();
+        assert_eq!(polys.len(), 2);
+
+        let expected_0 = [
+            Point { x: 0.0, y: 0.0 },
+            Point { x: 100.0, y: 0.0 },
+            Point {
+                x: 100.0,
+                y: 50.0 / 3.0,
+            },
+            Point {
+                x: 0.0,
+                y: 250.0 / 3.0,
+            },
+        ];
+        let expected_1 = [
+            Point {
+                x: 100.0,
+                y: 50.0 / 3.0,
+            },
+            Point { x: 100.0, y: 100.0 },
+            Point { x: 0.0, y: 100.0 },
+            Point {
+                x: 0.0,
+                y: 250.0 / 3.0,
+            },
+        ];
+
+        for (idx, poly) in &polys {
+            let expected = if *idx == 0 { &expected_0 } else { &expected_1 };
+            assert_eq!(poly.len(), expected.len(), "site {idx} vertex count");
+            for e in expected {
+                assert!(
+                    poly.iter()
+                        .any(|p| (p.x - e.x).abs() < 1e-3 && (p.y - e.y).abs() < 1e-3),
+                    "site {idx} missing expected vertex {:?} in {:?}",
+                    e,
+                    poly
+                );
+            }
+        }
+    }
 }
+

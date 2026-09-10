@@ -7,6 +7,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub mod lloyd;
 pub mod voronoi;
 pub use voronoi::*;
 
@@ -15,8 +16,11 @@ const WINDOW_INIT_HEIGHT: i32 = 500;
 const CANVAS_WIDTH: i32 = 800;
 const CANVAS_HEIGHT: i32 = 600;
 const DEFAULT_SITES: f64 = 25.0;
-const MAX_SITES: f64 = 250.0;
+const MAX_SITES: f64 = 500.0;
 const MIN_SITES: f64 = 5.0;
+const DEFAULT_PASSES: f64 = 3.0;
+const MAX_PASSES: f64 = 20.0;
+const MIN_PASSES: f64 = 1.0;
 
 fn main() {
     let app = Application::new(Some("org.bytetrail.dtx"), Default::default());
@@ -76,6 +80,23 @@ fn build_ui(app: &Application) {
     controls.append(&start_btn);
     controls.append(&stop_btn);
     controls.append(&reset_btn);
+    controls.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+    let passes_label = gtk4::Label::new(Some("Lloyd's Passes"));
+    passes_label.set_halign(gtk4::Align::Start);
+    let passes_spin = gtk4::SpinButton::with_range(MIN_PASSES, MAX_PASSES, 1.0);
+    passes_spin.set_value(DEFAULT_PASSES);
+    passes_spin.set_hexpand(true);
+
+    // Only meaningful once a tessellation is complete — cell shapes (and
+    // so centroids) aren't well-defined mid-sweep.
+    let relax_btn = gtk4::Button::with_label("Relax");
+    relax_btn.set_hexpand(true);
+    relax_btn.set_sensitive(false);
+
+    controls.append(&passes_label);
+    controls.append(&passes_spin);
+    controls.append(&relax_btn);
 
     root.append(&controls);
     root.append(&gtk4::Separator::new(Orientation::Vertical));
@@ -109,6 +130,7 @@ fn build_ui(app: &Application) {
     let voronoi_clone = Rc::clone(&voronoi_rc);
     let canvas_rx = canvas.clone();
     let sites_spin_rx = sites_spin.clone();
+    let relax_btn_rx = relax_btn.clone();
     let sweep_running_rx = Rc::clone(&sweep_running);
     glib::spawn_future_local(async move {
         while let Some(y) = rx.recv().await {
@@ -123,6 +145,9 @@ fn build_ui(app: &Application) {
                     // endpoint; push the sweep the rest of the way (off
                     // canvas, unanimated) to finish them off.
                     voronoi_clone.borrow_mut().finish_tessellation();
+                    // Cell shapes only mean anything once the tessellation
+                    // is complete, so relaxation only becomes available now.
+                    relax_btn_rx.set_sensitive(true);
                     canvas_rx.queue_draw();
                 }
             } else {
@@ -141,12 +166,14 @@ fn build_ui(app: &Application) {
     let stop_flag_resize = Rc::clone(&stop_flag);
     let sweep_running_resize = Rc::clone(&sweep_running);
     let sites_spin_resize = sites_spin.clone();
+    let relax_btn_resize = relax_btn.clone();
     let voronoi_resize = Rc::clone(&voronoi_rc);
     let tx_resize = tx.clone();
     canvas.connect_resize(move |area, width, height| {
         stop_flag_resize.borrow().store(true, Ordering::Relaxed);
         sweep_running_resize.set(false);
         sites_spin_resize.set_sensitive(true);
+        relax_btn_resize.set_sensitive(false);
 
         voronoi_resize.borrow_mut().resize(width, height);
         area.queue_draw();
@@ -158,6 +185,7 @@ fn build_ui(app: &Application) {
     let stop_flag_start = Rc::clone(&stop_flag);
     let sweep_running_start = Rc::clone(&sweep_running);
     let sites_spin_start = sites_spin.clone();
+    let relax_btn_start = relax_btn.clone();
     let rt_start = Rc::clone(&rt);
     let tx_start = tx.clone();
     let speed_scale_start = speed_scale.clone();
@@ -171,6 +199,7 @@ fn build_ui(app: &Application) {
         voronoi_start.borrow_mut().start_sweep();
         sweep_running_start.set(true);
         sites_spin_start.set_sensitive(false);
+        relax_btn_start.set_sensitive(false);
 
         let tx = tx_start.clone();
         // Speed 1 (Fast) → 5 ms/step, Speed 10 (Slow) → 50 ms/step.
@@ -198,10 +227,12 @@ fn build_ui(app: &Application) {
     let stop_flag_stop = Rc::clone(&stop_flag);
     let sweep_running_stop = Rc::clone(&sweep_running);
     let sites_spin_stop = sites_spin.clone();
+    let relax_btn_stop = relax_btn.clone();
     stop_btn.connect_clicked(move |_| {
         stop_flag_stop.borrow().store(true, Ordering::Relaxed);
         sweep_running_stop.set(false);
         sites_spin_stop.set_sensitive(true);
+        relax_btn_stop.set_sensitive(false);
     });
 
     //-----------------------------------------------------------------------------------
@@ -209,12 +240,14 @@ fn build_ui(app: &Application) {
     let stop_flag_reset = Rc::clone(&stop_flag);
     let sweep_running_reset = Rc::clone(&sweep_running);
     let sites_spin_reset = sites_spin.clone();
+    let relax_btn_reset = relax_btn.clone();
     let tx_reset = tx.clone();
     let voronoi_reset = Rc::clone(&voronoi_rc);
     reset_btn.connect_clicked(move |_| {
         stop_flag_reset.borrow().store(true, Ordering::Relaxed);
         sweep_running_reset.set(false);
         sites_spin_reset.set_sensitive(true);
+        relax_btn_reset.set_sensitive(false);
         // Rebuilding (rather than just clearing) the beachline puts it back
         // into the same "ready to run" state Start expects.
         voronoi_reset.borrow_mut().start_sweep();
@@ -227,10 +260,26 @@ fn build_ui(app: &Application) {
     // auto-resets the directrix so the new diagram starts from scratch.
     let voronoi_clone = Rc::clone(&voronoi_rc);
     let canvas_sites = canvas.clone();
+    let relax_btn_sites = relax_btn.clone();
     sites_spin.connect_value_changed(move |spin| {
         let mut v = voronoi_clone.borrow_mut();
         v.regenerate(spin.value() as usize);
+        relax_btn_sites.set_sensitive(false);
         canvas_sites.queue_draw();
+    });
+
+    //-----------------------------------------------------------------------------------
+    // handle relax (Lloyd's relaxation) — only enabled once a sweep has
+    // completed; see the `finish_tessellation` branch above and the
+    // Start/Stop/Reset/resize/sites-spin handlers that disable it again.
+    let voronoi_relax = Rc::clone(&voronoi_rc);
+    let canvas_relax = canvas.clone();
+    let passes_spin_relax = passes_spin.clone();
+    relax_btn.connect_clicked(move |_| {
+        let mut v = voronoi_relax.borrow_mut();
+        lloyd::relax(&mut v, passes_spin_relax.value() as usize);
+        drop(v);
+        canvas_relax.queue_draw();
     });
 
     root.append(&canvas);
