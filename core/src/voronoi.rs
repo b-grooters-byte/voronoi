@@ -1,9 +1,8 @@
-use gtk4::cairo;
 use std::cmp;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-pub const PARABOLA_X_STEP: usize = 5;
+const PARABOLA_X_STEP: usize = 5;
 
 /// Upper bound (in either direction, on either axis) for any coordinate
 /// handed to Cairo. Breakpoint/parabola math divides by quantities that
@@ -46,21 +45,6 @@ pub struct Site {
     pub x: f64,
     pub y: f64,
     pub color: (f64, f64, f64),
-}
-
-impl Site {
-    /// Renders the site marker. The parabola itself is no longer drawn
-    /// here — only the portion that's actually part of the beachline
-    /// matters, and `Voronoi::beachline` already draws exactly that.
-    pub fn draw(&self, _directrix: f64, _width: i32, _height: i32, ctx: &cairo::Context) {
-        ctx.set_source_rgba(1.0, 0.0, 0.0, 1.0);
-        ctx.set_line_width(1.0);
-        ctx.new_path();
-        ctx.arc(self.x, self.y, 2.0, 0.0, 2.0 * std::f64::consts::PI);
-        if let Err(_e) = ctx.stroke() {
-            // TODO handle error
-        }
-    }
 }
 
 /// Arc represents an arc in the beachline. It contains the index of the site
@@ -435,14 +419,32 @@ impl Voronoi {
     /// position (via the same `breakpoint_x`/`parabola_y` walk used
     /// elsewhere); such a point is dropped entirely if the walk hits the
     /// degenerate "just inserted" case (directrix exactly at a site's y).
+    /// Both endpoints are passed through `clamp_coord` — a near-singular
+    /// breakpoint calculation, or a near-collinear circumcenter, can
+    /// produce a coordinate that's finite but astronomically large, which
+    /// is a geometry concern (not specific to any one rendering backend),
+    /// so it's handled here rather than by each renderer separately.
+    ///
     /// Shared by rendering, the "is anything still visible" check, and
     /// cell-polygon assembly, so all three agree on what an edge's
     /// current shape is.
-    fn all_edge_segments(&self) -> Vec<(SiteIdx, SiteIdx, Point, Point, bool)> {
+    pub fn all_edge_segments(&self) -> Vec<(usize, usize, Point, Point, bool)> {
         let mut result = Vec::with_capacity(self.edges.len());
         for edge in &self.edges {
             if edge.done {
-                result.push((edge.left_site, edge.right_site, edge.start, edge.end, true));
+                result.push((
+                    edge.left_site,
+                    edge.right_site,
+                    Point {
+                        x: clamp_coord(edge.start.x),
+                        y: clamp_coord(edge.start.y),
+                    },
+                    Point {
+                        x: clamp_coord(edge.end.x),
+                        y: clamp_coord(edge.end.y),
+                    },
+                    true,
+                ));
             }
         }
         if let Some(root) = self.beachline.root {
@@ -465,7 +467,19 @@ impl Voronoi {
                 if x.is_nan() || y.is_nan() {
                     continue; // same degenerate (directrix == site.y) case beachline() guards against
                 }
-                result.push((left_site, right_site, edge.start, Point { x, y }, false));
+                result.push((
+                    left_site,
+                    right_site,
+                    Point {
+                        x: clamp_coord(edge.start.x),
+                        y: clamp_coord(edge.start.y),
+                    },
+                    Point {
+                        x: clamp_coord(x),
+                        y: clamp_coord(y),
+                    },
+                    false,
+                ));
             }
         }
         result
@@ -1058,36 +1072,6 @@ impl Voronoi {
         }
     }
 
-    pub fn draw(&self, width: i32, height: i32, ctx: &cairo::Context) {
-        for site in &self.sites {
-            site.draw(self.directrix, width, height, ctx);
-        }
-        // The sweep line, directrix readout, and transient beachline only
-        // mean something mid-sweep; once finish_tessellation has run,
-        // self.directrix is some large off-canvas value used purely for
-        // edge math, not anything worth showing.
-        if !self.finished {
-            ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
-            ctx.select_font_face(
-                "Monospace",
-                cairo::FontSlant::Normal,
-                cairo::FontWeight::Normal,
-            );
-            ctx.set_font_size(12.0);
-            ctx.set_line_width(1.0);
-            ctx.move_to(8.0, 34.0);
-            if let Err(_e) = ctx.show_text(format!("Directrix: {}", self.directrix).as_str()) {
-                // TODO handle error
-            }
-            ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
-            ctx.move_to(0.0, self.directrix);
-            ctx.line_to(width as f64, self.directrix);
-            ctx.stroke().unwrap();
-            self.beachline(ctx);
-        }
-        self.draw_edges(ctx);
-    }
-
     /// Collects the beachline's breakpoints in left-to-right order (an
     /// in-order traversal; mirrors `collect_arcs_inorder` but visits the
     /// internal nodes instead of the leaves).
@@ -1096,26 +1080,6 @@ impl Voronoi {
             self.collect_breakpoints_inorder(bp.left, out);
             out.push(node);
             self.collect_breakpoints_inorder(bp.right, out);
-        }
-    }
-
-    /// Draws every cell edge built so far: finished edges as a fixed
-    /// segment, and each still-growing edge from its birth point out to
-    /// its owning breakpoint's current (live) position.
-    fn draw_edges(&self, ctx: &cairo::Context) {
-        ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
-        ctx.set_line_width(1.0);
-        ctx.new_path();
-        // A near-collinear triple (or a near-singular breakpoint) can
-        // produce a coordinate far enough away to overflow Cairo's usable
-        // range even though it's a perfectly finite f64 — clamp everything
-        // handed to Cairo.
-        for (_, _, start, end, _done) in self.all_edge_segments() {
-            ctx.move_to(clamp_coord(start.x), clamp_coord(start.y));
-            ctx.line_to(clamp_coord(end.x), clamp_coord(end.y));
-        }
-        if let Err(_e) = ctx.stroke() {
-            println!("Error stroking cell edges: {:?}", _e);
         }
     }
 
@@ -1131,61 +1095,50 @@ impl Voronoi {
         }
     }
 
-    /// Returns each current beachline arc's site along with the x-range it
-    /// actually occupies, clipped to `[x_min, x_max]`. The range between
-    /// two neighboring arcs is exactly `breakpoint_x` between their sites
-    fn beachline_arcs(&self, x_min: f64, x_max: f64) -> Vec<(SiteIdx, f64, f64)> {
+    /// The transient beachline — only meaningful mid-sweep, before
+    /// `finish_tessellation` — as `(site index, sampled polyline)` per
+    /// active arc, ready to stroke. Each arc's visible x-range (clipped to
+    /// `[0, width]`) is sampled every `PARABOLA_X_STEP` pixels; an arc is
+    /// skipped entirely at the single degenerate instant it's inserted
+    /// (directrix exactly at its site's y, which would divide by zero).
+    /// Sampled points are passed through `clamp_coord`, same rationale as
+    /// `all_edge_segments`.
+    pub fn beachline_curve(&self) -> Vec<(usize, Vec<Point>)> {
         let mut arcs = Vec::new();
         if let Some(root) = self.beachline.root {
             self.collect_arcs_inorder(root, &mut arcs);
         }
+        let width = self.width as f64;
         let mut result = Vec::with_capacity(arcs.len());
-        let mut start_x = x_min;
+        let mut start_x = 0.0;
         for i in 0..arcs.len() {
+            let site_idx = arcs[i];
             let end_x = if i + 1 < arcs.len() {
-                self.breakpoint_x(&self.sites[arcs[i]], &self.sites[arcs[i + 1]])
+                self.breakpoint_x(&self.sites[site_idx], &self.sites[arcs[i + 1]])
             } else {
-                x_max
+                width
             };
-            result.push((arcs[i], start_x, end_x));
+            let site = &self.sites[site_idx];
+            if (site.y - self.directrix).abs() < 1e-9 || end_x - start_x < 1e-6 {
+                start_x = end_x;
+                continue;
+            }
+            let mut points = Vec::new();
+            let mut x = start_x.max(0.0);
+            let end = end_x.min(width);
+            while x <= end {
+                points.push(Point {
+                    x,
+                    y: clamp_coord(self.parabola_y(site, x)),
+                });
+                x += PARABOLA_X_STEP as f64;
+            }
+            if !points.is_empty() {
+                result.push((site_idx, points));
+            }
             start_x = end_x;
         }
         result
-    }
-
-    fn beachline(&self, ctx: &cairo::Context) {
-        let clip = ctx.clip_extents().unwrap();
-        ctx.set_line_width(1.0);
-        for (site_idx, x_start, x_end) in self.beachline_arcs(0.0, self.width as f64) {
-            let site = &self.sites[site_idx];
-            // Right at the moment a site is inserted its arc has zero
-            // width (directrix == site.y), which would divide by zero
-            // below; skip drawing it for that single instant.
-            if (site.y - self.directrix).abs() < 1e-9 || x_end - x_start < 1e-6 {
-                continue;
-            }
-            ctx.set_source_rgba(site.color.0, site.color.1, site.color.2, 1.0);
-            ctx.new_path();
-            let mut started = false;
-            let mut x = x_start.max(0.0);
-            let end = x_end.min(clip.2);
-            while x <= end {
-                let y = clamp_coord(
-                    1.0 / (2.0 * (site.y - self.directrix)) * ((x - site.x) * (x - site.x))
-                        + ((site.y + self.directrix) / 2.0),
-                );
-                if started {
-                    ctx.line_to(x, y);
-                } else {
-                    ctx.move_to(x, y);
-                    started = true;
-                }
-                x += PARABOLA_X_STEP as f64;
-            }
-            if let Err(_e) = ctx.stroke() {
-                println!("Error stroking beachline: {:?}", _e);
-            }
-        }
     }
 }
 

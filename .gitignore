@@ -17,3 +17,6 @@ Cargo.lock
 # Machine-specific Windows GTK build configuration
 .cargo/config.toml
 .cargo/run-with-gtk.cmd
+
+# trunk build output for the web app
+/web-app/dist/

@@ -1,0 +1,16 @@
+[package]
+name = "voronoi-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "voronoi_core"
+path = "src/lib.rs"
+
+[dependencies]
+rand = { version = "0.8.6", features = ["std_rng"] }
+
+# rand's default RNG source (getrandom) has no wasm32 backend unless told
+# to use the browser's crypto API instead.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }

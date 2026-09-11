@@ -1,0 +1,13 @@
+[package]
+name = "voronoi-web"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+console_error_panic_hook = "0.1.7"
+gloo-timers = { version = "0.4.0", features = ["futures"] }
+voronoi-core = { path = "../core" }
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4.78"
+web-sys = { version = "0.3.105", features = ["CanvasRenderingContext2d", "HtmlCanvasElement", "Window", "Document", "Element", "ResizeObserver"] }
+yew = { version = "0.23.0", features = ["csr"] }

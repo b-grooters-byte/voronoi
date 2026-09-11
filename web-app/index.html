@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Voronoi Diagram</title>
+    <style>
+      /* App fills the viewport so the canvas has real space to flex into. */
+      html, body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+      }
+
+      .sidebar {
+        width: 180px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 16px 12px;
+        box-sizing: border-box;
+        overflow-y: auto;
+      }
+
+      /* Flex items default to min-width: auto (their content's intrinsic
+         width), which lets them refuse to shrink and overflow their
+         container even with width: 100% / flex: 1 set. Every element in
+         here is a flex child (the sidebar itself, or the Speed row), so
+         all of them need min-width: 0 to actually respect the sidebar's
+         180px. */
+      .sidebar * {
+        min-width: 0;
+        box-sizing: border-box;
+      }
+
+      .sidebar input,
+      .sidebar button {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body></body>
+</html>

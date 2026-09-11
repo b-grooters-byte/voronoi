@@ -4,26 +4,25 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
+use voronoi_core::{Voronoi, lloyd};
 
-pub mod lloyd;
-pub mod voronoi;
-pub use voronoi::*;
+mod render;
 
 const WINDOW_INIT_WIDTH: i32 = 900;
 const WINDOW_INIT_HEIGHT: i32 = 500;
 const CANVAS_WIDTH: i32 = 800;
 const CANVAS_HEIGHT: i32 = 600;
 const DEFAULT_SITES: f64 = 25.0;
-const MAX_SITES: f64 = 500.0;
+const MAX_SITES: f64 = 2500.0;
 const MIN_SITES: f64 = 5.0;
 const DEFAULT_PASSES: f64 = 3.0;
 const MAX_PASSES: f64 = 20.0;
 const MIN_PASSES: f64 = 1.0;
 
 fn main() {
-    let app = Application::new(Some("org.bytetrail.dtx"), Default::default());
+    let app = Application::new(Some("org.bag.voronoi"), Default::default());
     app.connect_activate(move |app| {
         build_ui(app);
     });
@@ -112,7 +111,7 @@ fn build_ui(app: &Application) {
     let voronoi_clone = Rc::clone(&voronoi_rc);
     canvas.set_draw_func(move |_area, ctx, width, height| {
         let v = voronoi_clone.borrow();
-        v.draw(width, height, ctx);
+        render::draw(&v, width, height, ctx);
     });
 
     // tokio::sync::mpsc::Sender is Send so it moves into the Tokio task.
@@ -126,6 +125,12 @@ fn build_ui(app: &Application) {
     // sweep_running: true while a Tokio sweep task is active.
     // Used to gate sites_spin sensitivity and ignore stale Done signals.
     let sweep_running: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+
+    // The sweep task (a background Tokio task, not on the GTK main thread)
+    // reads this on every tick instead of capturing a fixed delay once at
+    // Start, so dragging the Speed slider takes effect immediately on an
+    // already-running sweep, not just on the next Start.
+    let speed_value = Arc::new(AtomicU64::new(speed_scale.value() as u64));
 
     let voronoi_clone = Rc::clone(&voronoi_rc);
     let canvas_rx = canvas.clone();
@@ -188,7 +193,7 @@ fn build_ui(app: &Application) {
     let relax_btn_start = relax_btn.clone();
     let rt_start = Rc::clone(&rt);
     let tx_start = tx.clone();
-    let speed_scale_start = speed_scale.clone();
+    let speed_value_start = Arc::clone(&speed_value);
     let voronoi_start = Rc::clone(&voronoi_rc);
     start_btn.connect_clicked(move |_| {
         // Cancel any running sweep and issue a fresh cancellation token.
@@ -202,8 +207,7 @@ fn build_ui(app: &Application) {
         relax_btn_start.set_sensitive(false);
 
         let tx = tx_start.clone();
-        // Speed 1 (Fast) → 5 ms/step, Speed 10 (Slow) → 50 ms/step.
-        let delay = tokio::time::Duration::from_millis(speed_scale_start.value() as u64 * 5);
+        let speed_value = Arc::clone(&speed_value_start);
 
         rt_start.spawn(async move {
             let mut y = 0.0_f64;
@@ -215,7 +219,11 @@ fn build_ui(app: &Application) {
                     break;
                 }
                 y += 1.0;
-                tokio::time::sleep(delay).await;
+                // Speed 1 (Fast) → 5 ms/step, Speed 10 (Slow) → 50 ms/step.
+                // Read fresh each tick (rather than once at Start) so a
+                // mid-sweep Speed change takes effect immediately.
+                let delay_ms = speed_value.load(Ordering::Relaxed) * 5;
+                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
             }
             // Signal completion so the receiver can re-enable sites_spin.
             tx.send(f64::NEG_INFINITY).await.ok();
@@ -252,6 +260,14 @@ fn build_ui(app: &Application) {
         // into the same "ready to run" state Start expects.
         voronoi_reset.borrow_mut().start_sweep();
         tx_reset.try_send(0.0).ok();
+    });
+
+    //-----------------------------------------------------------------------------------
+    // handle speed scale — keeps speed_value in sync so the in-flight
+    // sweep task (see start_btn's handler) picks up changes immediately.
+    let speed_value_changed = Arc::clone(&speed_value);
+    speed_scale.connect_value_changed(move |scale| {
+        speed_value_changed.store(scale.value() as u64, Ordering::Relaxed);
     });
 
     //-----------------------------------------------------------------------------------
